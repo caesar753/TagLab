@@ -192,6 +192,11 @@ class RowsWidget(QWidget):
         self.actionShowBranch.toggled.connect(self.toggleShowBranch)
         self.branch_checked = False
 
+        self.actionComputeTopBottom = QAction("Show Top-Bottom Shortest Path", self)
+        self.actionComputeTopBottom.setCheckable(True)
+        self.actionComputeTopBottom.toggled.connect(self.computeTopBottomToggled)
+        self.actionComputeTopBottom.setEnabled(False)
+
         self.actionShowEdges = QAction("Show Edges", self)
         
         self.actionShowEdges.setCheckable(False)
@@ -415,12 +420,12 @@ class RowsWidget(QWidget):
         self.btnThickness.clicked.connect(lambda: self.thicknessMap(self.work_mask))
 
 
-         # New: compute shortest path top->bottom along skeleton
-        self.btnTopBottom = QPushButton("Top-Bottom Path")
-        self.btnTopBottom.setToolTip("Compute shortest path from top branch points to bottom along the skeleton")
-        self.btnTopBottom.clicked.connect(self.computeTopBottomPath)
-        self.btnTopBottom.setEnabled(False)
-        data_button_layout.addWidget(self.btnTopBottom)
+        #New: compute shortest path top->bottom along skeleton
+        # self.btnTopBottom = QPushButton("Top-Bottom Path")
+        # self.btnTopBottom.setToolTip("Compute shortest path from top branch points to bottom along the skeleton")
+        # self.btnTopBottom.clicked.connect(self.computeTopBottomPath)
+        # self.btnTopBottom.setEnabled(False)
+        # data_button_layout.addWidget(self.btnTopBottom)
 
         
         data_button_layout.setAlignment(Qt.AlignLeft)
@@ -552,7 +557,9 @@ class RowsWidget(QWidget):
         self.btnThickness.setEnabled(True)
         
         #NEW
-        self.btnTopBottom.setEnabled(True)
+        self.top_bottom_path = None
+        #NEW
+        # self.btnTopBottom.setEnabled(True)
         
         # Get row_distance from  BrickDistBox
         # try:
@@ -594,8 +601,20 @@ class RowsWidget(QWidget):
         branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
         self.skel_viewer.setOpacity(1.0)
         self.skel_viewer.setOverlayImage(branch_image)
-        #NEW
-        self.top_bottom_path = None
+        # #NEW
+        # self.top_bottom_path = None
+        self.actionComputeTopBottom.setEnabled(True)
+        # precompute top-bottom path (do not draw it yet)
+        try:
+            ok = self.computeTopBottom(show_msg=False)
+            if ok:
+                # reflect visible path in the context menu action
+                self.actionComputeTopBottom.setChecked(False)
+        except Exception:
+            # silently ignore precompute errors here
+            pass
+
+
 
     
     def closeWidget(self):
@@ -1279,11 +1298,42 @@ class RowsWidget(QWidget):
         return branch_points, segments
     
     ###########COMPUTE TOP-BOTTOM PATH###########
-    def computeTopBottomPath(self):
+    def computeTopBottomToggled(self, checked):
+        if checked:
+            # show precomputed path (compute it first if not present)
+            if not getattr(self, "top_bottom_path", None):
+                ok = self.computeTopBottom(show_msg=True)
+                if not ok:
+                    QMessageBox.warning(self, "No path", "Top-Bottom path not available. Compute rows first.")
+                    self.actionComputeTopBottom.setChecked(False)
+                    return
+            else:
+                # path already computed: draw and show info dialog with stored length
+                self.drawTopBottomPath()
+                if getattr(self, "top_bottom_length", None) is not None:
+                    # QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {self.top_bottom_length}")
+                    if self.scale:
+                        print("self.scale is set")
+                        scaled_len = self.top_bottom_length * float(self.scale)
+                        QMessageBox.information(self, "Path found", f"Top-Bottom path length: {scaled_len} mm ({self.top_bottom_length} pixels)")
+                    else:
+                        print("self.scale is not set")
+                        QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {self.top_bottom_length}")
+        else:
+            # hide path by redrawing base branch image
+            if getattr(self, "skeleton", None) is not None:
+                branch_image = self.drawBranchSkel(
+                    self.skeleton, self.branch_points, self.edges,
+                    self.branch_checked, self.skel_checked, self.edges_checked,
+                    self.rows_checked, self.columns_checked
+                )
+                self.skel_viewer.setOverlayImage(branch_image)
+
+    def computeTopBottom(self, show_msg=True):
         # require skeleton/branch points and stored pixel graph
         if getattr(self, "skel_graph", None) is None or not self.branch_points:
             QMessageBox.warning(self, "Missing data", "Compute skeleton/branch points first.")
-            return
+            return False
 
         h, w = self.skeleton.shape
         # branch_points are (y,x) -> convert to (x,y) to match graph nodes
@@ -1291,7 +1341,7 @@ class RowsWidget(QWidget):
         ys = [y for x, y in pts_xy]
         if not ys:
             QMessageBox.warning(self, "No branch points", "No branch points available.")
-            return
+            return False
 
         tol = max(5, int(0.05 * h))
         min_y = min(ys)
@@ -1300,7 +1350,7 @@ class RowsWidget(QWidget):
         bottom_candidates = [p for p in pts_xy if p[1] >= max_y - tol]
         if not top_candidates or not bottom_candidates:
             QMessageBox.warning(self, "Top/Bottom not found", "Could not identify top or bottom branch points.")
-            return
+            return False
 
         best_path = None
         best_len = None
@@ -1322,25 +1372,47 @@ class RowsWidget(QWidget):
 
         if best_path is None:
             QMessageBox.warning(self, "No path", "No path found between top and bottom branch points.")
-            return
+            return False
 
-        # save as (y,x) for later use
+        # save as (y,x) for later use and store length
         self.top_bottom_path = [(y, x) for x, y in best_path]
+        self.top_bottom_length = best_len
 
-        # draw path over existing branch image
+        # draw path over existing branch image only when requested (i.e. from toggle)
+        if show_msg:
+            branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+            painter = QPainter(branch_image)
+            pen = QPen(QColor(255, 0, 0), 4)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            for i in range(len(best_path) - 1):
+                x0, y0 = best_path[i]
+                x1, y1 = best_path[i + 1]
+                painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+            painter.end()
+            self.skel_viewer.setOverlayImage(branch_image)
+            QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {best_len}")
+        return True
+
+    def drawTopBottomPath(self):
+        """Draw the already-computed path over the branch image."""
+        if not getattr(self, "top_bottom_path", None):
+            return
         branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
         painter = QPainter(branch_image)
         pen = QPen(QColor(255, 0, 0), 4)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        for i in range(len(best_path) - 1):
-            x0, y0 = best_path[i]
-            x1, y1 = best_path[i + 1]
+        # stored path is (y,x) pairs; convert to (x,y) for drawing
+        path_nodes = [(x, y) for (y, x) in self.top_bottom_path]
+        for i in range(len(path_nodes) - 1):
+            x0, y0 = path_nodes[i]
+            x1, y1 = path_nodes[i + 1]
             painter.drawLine(int(x0), int(y0), int(x1), int(y1))
         painter.end()
         self.skel_viewer.setOverlayImage(branch_image)
-        QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {best_len}")
         
     
     #####MASK-LINES METHODS#####
@@ -1613,6 +1685,7 @@ class RowsWidget(QWidget):
             menu.addAction(self.actionSeparator)
 
             menu.addAction(self.actionShowBranch)
+            menu.addAction(self.actionComputeTopBottom)
 
             menu.exec_(self.skel_viewer.mapToGlobal(position))
     
@@ -1626,8 +1699,20 @@ class RowsWidget(QWidget):
             self.actionShowRows.setChecked(False)
             self.columns_checked = False
             self.actionShowColumns.setChecked(False)
+            # when skeleton is visible, allow computing/showing top-bottom path
+            # keep enabled state as set elsewhere (compute must enable it after computeRows)
+            try:
+                self.actionComputeTopBottom.setCheckable(True)
+            except Exception:
+                pass
         else:
             self.skel_checked = False
+            # when skeleton hidden, ensure top-bottom action is untoggled and not checkable
+            try:
+                self.actionComputeTopBottom.setChecked(False)
+                self.actionComputeTopBottom.setCheckable(False)
+            except Exception:
+                pass
         
         self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
 
