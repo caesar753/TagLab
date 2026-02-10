@@ -9,10 +9,15 @@ class Cut(Tool):
 
         message = "<p><i>Divide an existing region</i></p>"
         message += "<p>Double click to select a region</p>"
-        message += "<p>- LMB + drag to draw a line that bisects the selected region<br/>\
-                    - CTRL + LMB + drag to pan view</p>"
+        message += "<p>- SHIFT + LMB to draw a line that bisects the selected region</p>"
         message += "<p>SPACEBAR to divide the region into two</p>"
         self.tool_message = f'<div style="text-align: left;">{message}</div>'
+
+    def activate(self):
+        self.viewerplus.showMessage(self.tool_message)
+
+    def deactivate(self):
+        self.viewerplus.clearMessage()
 
     def leftPressed(self, x, y, mods=None):
         if self.edit_points.startDrawing(x, y):
@@ -29,6 +34,8 @@ class Cut(Tool):
 
         if len(self.viewerplus.selected_blobs) != 1:
             self.infoMessage.emit("A single selected area is required.")
+            self.viewerplus.resetSelection()
+            self.viewerplus.resetTools()
             return
 
         selected_blob = self.viewerplus.selected_blobs[0]

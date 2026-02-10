@@ -237,7 +237,7 @@ class Annotation(object):
 
     def createNegative(self, blobs, wa):
 
-        inner_blobs = self.calculate_inner_blobs(wa)
+        inner_blobs = self.calculate_inner_intersecting_blobs(wa) # blobs that are fully inside OR just intersecting the working area
         boxes = []
         for blob in blobs:
             boxes.append(blob.bbox)
@@ -608,13 +608,12 @@ class Annotation(object):
         """
         Create a label map as a QImage and returns it.
         """
-
-        # create a black canvas of the same size of your map
+        # create a transparent canvas of the same size of your map
         w = size.width()
         h = size.height()
 
         imagebox = [0, 0, h, w]
-        image = np.zeros([h, w, 3], np.uint8)
+        image = np.zeros([h, w, 4], np.uint8)  # 4 channels for RGBA
 
         for i, blob in enumerate(self.seg_blobs):
 
@@ -623,9 +622,10 @@ class Annotation(object):
                     continue
 
             if blob.class_name == "Empty":
-                rgb = [255, 255, 255]
+                rgba = [255, 255, 255, 255]
             else:
                 rgb = labels_dictionary[blob.class_name].fill
+                rgba = [rgb[0], rgb[1], rgb[2], 255]  # Add full opacity
 
             mask = blob.getMask().astype(bool)  # bool is required for bitmask indexing
             box = blob.bbox.copy()  # blob.bbox is top, left, width, height
@@ -638,17 +638,17 @@ class Annotation(object):
                        range[1] - imagebox[1]:range[3] - imagebox[1]]
             submask = mask[range[0] - box[0]:range[2] - box[0], range[1] - box[1]:range[3] - box[1]]
 
-            # use the binary mask to assign a color
-            subimage[submask] = rgb
+            # use the binary mask to assign a color with full opacity
+            subimage[submask] = rgba
 
             # create 1px border: dilate then subtract the mask.
             border = binary_dilation(submask) & ~submask
 
             # select only the border over blobs of the same color and draw the border
-            samecolor = np.all(subimage == rgb, axis=-1)
-            subimage[border & samecolor] = [0, 0, 0]
+            samecolor = np.all(subimage[:, :, :3] == rgba[:3], axis=-1)
+            subimage[border & samecolor] = [0, 0, 0, 255]  # Black border with full opacity
 
-        labelimg = genutils.rgbToQImage(image)
+        labelimg = genutils.rgbaToQImage(image)
 
         if working_area is not None:
             # FIXME: this is inefficient! The working_area should be used during the drawing.
@@ -661,7 +661,6 @@ class Annotation(object):
         """
         This consider only blobs falling ENTIRELY in the working area"
         """
-
         selected_blobs = self.seg_blobs
         inner_blobs = []
         for blob in selected_blobs:
@@ -670,12 +669,23 @@ class Annotation(object):
 
         return inner_blobs
 
+    def calculate_inner_intersecting_blobs(self, working_area):
+        """
+        This consider only blobs inside or intersecting the working area"
+        """
+        selected_blobs = self.seg_blobs
+        intersecting_blobs = []
+        for blob in selected_blobs:
+            if Mask.checkIntersection(working_area, blob.bbox):
+                intersecting_blobs.append(blob)
+
+        return intersecting_blobs
+
 
     def calculate_inner_points(self, working_area):
         """
         This consider only points having center inside the working area"
         """
-
         selected_annpoints = self.annpoints
         inner_annpoints = []
         for annpoint in selected_annpoints:
@@ -703,7 +713,6 @@ class Annotation(object):
         return count, tot_area
 
     def countPoints(self, label):
-
         """
         This consider all the existing points, inside and outside the working area.
         It returns number of points per label
@@ -721,7 +730,6 @@ class Annotation(object):
         It imports a label map and create the corresponding blobs.
         The offset is stored as a [top, left] coordinates and scale are the scale factors of X and Y axis respectively.
         """
-
         qimg_label_map = QImage(filename)
         qimg_label_map = qimg_label_map.convertToFormat(QImage.Format_RGB32)
 

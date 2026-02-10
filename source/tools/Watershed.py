@@ -40,6 +40,12 @@ class Watershed(Tool):
         message += "<p>- SHIFT + wheel to set brush size</p>"
         message += "<p>SPACEBAR to apply segmentation</p>"
         self.tool_message = f'<div style="text-align: left;">{message}</div>'
+
+    def activate(self):
+        self.viewerplus.showMessage(self.tool_message)
+
+    def deactivate(self):
+        self.viewerplus.clearMessage()
     
     def setActiveLabel(self, label):
         # print(f"ActiveLabel id is {label.id}\n\
@@ -65,7 +71,7 @@ class Watershed(Tool):
         if mods &  Qt.ShiftModifier:
             self.scribbles.move(x, y)
 
-    def wheel(self, delta):
+    def wheel(self, delta, mods=None):
         increase = float(delta.y()) / 10.0
         if 0.0 < increase < 1.0:
             increase = 1

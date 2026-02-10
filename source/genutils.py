@@ -142,6 +142,9 @@ def binaryMaskToRle(mask):
 
 
 def integerMapToQImage(int_map):
+    """
+    It encodes integer values into an RGB QImage.
+    """
 
     h = int_map.shape[0]
     w = int_map.shape[1]
@@ -150,7 +153,7 @@ def integerMapToQImage(int_map):
     max_value = np.max(imap)
     min_value = np.min(imap)
 
-    # integer to color (integer value = (red + green * 256 + blue * 65536))
+    # integer to color (integer value = (red + green / 256 + blue / 65536))
     imap_red = imap.copy()
     imap_green = imap.copy()
     imap_green = imap_green >> 8
@@ -213,10 +216,25 @@ def rgbToQImage(image):
         imgdata[:, :, 2] = image[:, :, 0]
         imgdata[:, :, 1] = image[:, :, 1]
         imgdata[:, :, 0] = image[:, :, 2]
-        imgdata[:, :, 3] = 255
-        qimg = QImage(imgdata.data, w, h, QImage.Format_RGB32)
+        if ch == 4:
+            imgdata[:, :, 3] = image[:, :, 3]  # Preserve alpha channel
+        else:
+            imgdata[:, :, 3] = 255
+        
+        # Use ARGB32 format to support transparency
+        if ch == 4:
+            qimg = QImage(imgdata.data, w, h, QImage.Format_ARGB32)
+        else:
+            qimg = QImage(imgdata.data, w, h, QImage.Format_RGB32)
 
     return qimg.copy()
+
+def rgbaToQImage(image):
+    """
+    Convert RGBA numpy array to QImage with alpha channel support.
+    This is an alias for rgbToQImage which now handles RGBA properly.
+    """
+    return rgbToQImage(image)
 
 def figureToQPixmap(fig, dpi, width, height):
 
@@ -607,4 +625,20 @@ def rgb_to_aci(self, r, g, b):
             min_distance = distance
             closest_aci = aci
 
-    return closest_aci 
+    return closest_aci
+
+
+def getLabelNamesByColor(labels_dict, color):
+    """
+    It returns the label names associated with a color given a labels dictionary.. 
+    """
+
+    label_names = []
+
+    keys = list(labels_dict.keys())
+    for key in keys:
+        c = labels_dict[key].fill
+        if c[0] == color[0] and c[1] == color[1] and c[2] == color[2]:
+            label_names.append(key)
+
+    return label_names

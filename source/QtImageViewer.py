@@ -30,7 +30,7 @@ class QtImageViewer(QGraphicsView):
         # local handle to the scene's current image pixmap.
         self.pixmapitem = QGraphicsPixmapItem()
         self.pixmapitem.setZValue(0)
-        self.scene.addItem(self.pixmapitem)
+        # Don't add to scene yet - will be added when pixmap is set in setImg()
 
         # OVERLAY
         self.scene_overlay = QGraphicsScene()
@@ -95,6 +95,10 @@ class QtImageViewer(QGraphicsView):
         else:
             raise RuntimeError("Argument must be a QImage.")
 
+        # Add pixmap item to scene if not already added
+        if self.pixmapitem.scene() is None:
+            self.scene.addItem(self.pixmapitem)
+        
         self.pixmapitem.setPixmap(self.pixmap)
 
         if zoomf < 0.0000001:
@@ -125,6 +129,7 @@ class QtImageViewer(QGraphicsView):
         zoom = self.zoom_factor / self.px_to_mm
         self.viewHasChanged.emit(posx, posy, zoom)
 
+    @pyqtSlot(float, float, float)
     def setViewParameters(self, posx, posy, zoomfactor):
         if not self.isVisible():
             return
@@ -132,6 +137,7 @@ class QtImageViewer(QGraphicsView):
         self.horizontalScrollBar().setValue(int(posx))
         self.verticalScrollBar().setValue(int(posy))
         self.zoom_factor = zoomfactor * self.px_to_mm
+        print(self.objectName(), posx, posy, self.zoom_factor)
         self.updateViewer()
         self.blockSignals(False)
 
@@ -229,9 +235,17 @@ class QtImageViewer(QGraphicsView):
 
     @pyqtSlot(float, float)
     def center(self, x, y):
-
+        if self.img_map is None:
+            return
         zf = self.zoom_factor
 
+        # NOTE: self.img_map is None if image is not loaded
+        # this will cause an exception when calling center() method as the object has no width/height
+        if self.img_map is None:
+            # We do not have access to the logging object.
+            print("Warning: Image not loaded. Cannot center image.")
+            return
+        
         xmap = float(self.img_map.width()) * x
         ymap = float(self.img_map.height()) * y
 

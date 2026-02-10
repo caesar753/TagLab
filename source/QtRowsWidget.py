@@ -1,8 +1,9 @@
 import sys
 
 import numpy as np
-import cv2
+# import cv2
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QSizePolicy, QTextEdit, QLineEdit, QSlider, QMenu, QCheckBox, QMenuBar, QAction, QDialog
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPolygonF
@@ -18,64 +19,81 @@ from skimage.morphology import skeletonize, thin
 from skimage.graph import route_through_array
 import networkx as nx
 
-from scipy.interpolate import interp1d
-from scipy.ndimage import binary_dilation, binary_erosion, convolve
+# from scipy.interpolate import interp1d
+from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt, convolve
 
-from skimage import measure, morphology, io, color
+# from skimage import measure, morphology, io, color
 from skimage.draw import line
 from scipy.spatial import KDTree
 
-import svgwrite
-from PyQt5.QtSvg import QSvgRenderer
+# import svgwrite
+# from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QColorDialog
+# from subprocess import check_call
 
-IMAGEVIEWER_W = 1250
-IMAGEVIEWER_H = 1100
-TEXTBOX_H = 150
+# from itertools import combinations
+
+
+TEXTBOX_H = 100
 class RowsWidget(QWidget):
 
     closeRowsWidget = pyqtSignal()
 
     # def __init__(self, image_cropped, created_blobs, offset, parent=None):
-    def __init__(self, cropped_image, mask_array, blobs, rect, parent = None):
+    def __init__(self, cropped_image, mask_array, work_blobs, work_area, parent = None, screen_size = None):    
         super(RowsWidget, self).__init__(parent)
-
-        # self.q_skel = None
-
-        # i = 0
-        self.setStyleSheet("background-color: rgb(40,40,40); color: white")
-        self.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
-        self.setMinimumWidth(2560)
-        self.setMinimumHeight(1600)     
 
         self.setWindowTitle("Rows Analysis")
         self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
+
+        self.setStyleSheet("background-color: rgb(40,40,40); color: white")
+        self.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
+        if screen_size is not None:   
+            width = int(screen_size.width() * 0.9)
+            height = int(screen_size.height()* 0.9)
+            self.setMinimumSize(width, height)
+            self.resize(width, height)
+            self.IMAGEVIEWER_W = width//2 - 40
+            self.IMAGEVIEWER_H = height - 500
+        else:
+            self.setMinimumWidth(1440)
+            self.setMinimumHeight(900)   
+            self.IMAGEVIEWER_W = 640
+            self.IMAGEVIEWER_H = 480  
 
         self.parent_viewer = None
         if parent:
             self.parent_viewer = parent
             self.scale = self.parent_viewer.image.map_px_to_mm_factor
             # print(f"Scale is {self.scale}")
-            self.blob_list = blobs
-            rettangolo = self.parent_viewer.dragSelectionRect.rect()
-            self.off = [rettangolo.x(), rettangolo.y()]
-        
+
+        # offset value to be used to align the cropped image
+        tl = work_area.rect().topLeft()
+        self.offset = [tl.x(), tl.y()]
+
         self.image_cropped = cropped_image
-        # self.image_mask = image_mask
-        self.maschera = mask_array
-        self.masch = None
+        self.original_mask = mask_array
+        self.work_mask = None
         self.blob_image = None
         self.image_overlay = None
         self.skeleton = None
+        self.thickness = None
+        self.thickness_image = None
+        self.thickness_data = []
         self.branch_points =  []
+        
         self.edges = []
+        self.row_segments = []
+        self.column_segments = []
 
-        self.rect = rect
-        self.blob_list = blobs
+        self.rect = work_area
+        self.blob_list = work_blobs
         self.centroids = []
-        self.bboxes = []        
+        self.bboxes = []
 
-        self.set_textbox = False
+        self.set_anglebox = False
+        self.set_thickbox = False
 
         #create line viewer
         line_viewer_layout = QVBoxLayout()
@@ -83,8 +101,8 @@ class RowsWidget(QWidget):
         self.line_viewer.disableScrollBars()
         self.line_viewer.enablePan()
         self.line_viewer.enableZoom()
-        self.line_viewer.setFixedWidth(IMAGEVIEWER_W)
-        self.line_viewer.setFixedHeight(IMAGEVIEWER_H)
+        self.line_viewer.setFixedWidth(self.IMAGEVIEWER_W)
+        self.line_viewer.setFixedHeight(self.IMAGEVIEWER_H)
         self.line_viewer.setImg(self.image_cropped)
 
         # Enable context menu policy
@@ -94,10 +112,14 @@ class RowsWidget(QWidget):
 
         # Create checkable actions for the mask and lines
         self.actionShowMask = QAction("Show Mask", self)
-        
         self.actionShowMask.setCheckable(False)
         self.actionShowMask.toggled.connect(self.toggleShowMask)
         self.mask_checked = False
+
+        self.actionShowThickness = QAction("Show Thickness Map", self)
+        self.actionShowThickness.setCheckable(False)
+        self.actionShowThickness.toggled.connect(self.toggleShowThickness)
+        self.thickness_checked = False
 
         self.actionShowBlobs = QAction("Show Blobs", self)
         self.actionShowBlobs.setCheckable(False)
@@ -105,35 +127,38 @@ class RowsWidget(QWidget):
         self.blobs_checked = False
 
         self.actionShowLines = QAction("Show Lines", self)
-        
         self.actionShowLines.setCheckable(False)
         self.actionShowLines.toggled.connect(self.toggleShowLines)
         self.line_checked = False
         line_viewer_layout.addWidget(self.line_viewer, alignment=Qt.AlignTop)
         
-        line_viewer_layout.setSpacing(45)
+        # line_viewer_layout.setSpacing(45)
         
         lineslopes_layout = QVBoxLayout()
         
-        lineangle_label = QLabel(f"Slopes")
+        lineangle_label = QLabel(f"Data")
         
         self.angleTextBox = QTextEdit(self)
         self.angleTextBox.setReadOnly(True)
-        self.angleTextBox.setFixedWidth(IMAGEVIEWER_W)
+        self.angleTextBox.setFixedWidth(self.IMAGEVIEWER_W)
         self.angleTextBox.setFixedHeight(TEXTBOX_H)
 
         # Add export lines
-        self.btnLineExport = QPushButton("Export Line Data")
-        self.btnLineExport.clicked.connect(self.exportLineViewerData)
+        # self.btnLineExport = QPushButton("Export Line Data")
+        # self.btnLineExport.clicked.connect(self.exportLineViewerData)
 
         lineslopes_layout.setSpacing(5)  # Reduce spacing to bring QLabel closer to QTextEdit
 
         lineslopes_layout.addWidget(lineangle_label, alignment=Qt.AlignBottom)
         lineslopes_layout.addWidget(self.angleTextBox, alignment=Qt.AlignTop)
-        lineslopes_layout.addWidget(self.btnLineExport, alignment=Qt.AlignTop)
+        # lineslopes_layout.addWidget(self.btnLineExport, alignment=Qt.AlignTop)
+        # lineslopes_layout.addWidget(self.btnLineExport, alignment=Qt.AlignTop)
 
 
-        line_viewer_layout.addLayout(lineslopes_layout)
+        # line_viewer_layout.addLayout(lineslopes_layout)
+        # line_viewer_layout.addWidget(lineangle_label, alignment=Qt.AlignTop)
+        # line_viewer_layout.addWidget(self.angleTextBox, alignment=Qt.AlignTop)
+        # line_viewer_layout.addWidget(self.btnLineExport, alignment=Qt.AlignBottom)
         
 
         # create skeleton viewer
@@ -142,8 +167,8 @@ class RowsWidget(QWidget):
         self.skel_viewer.disableScrollBars()
         self.skel_viewer.enablePan()
         self.skel_viewer.enableZoom()
-        self.skel_viewer.setFixedWidth(IMAGEVIEWER_W)
-        self.skel_viewer.setFixedHeight(IMAGEVIEWER_H)
+        self.skel_viewer.setFixedWidth(self.IMAGEVIEWER_W)
+        self.skel_viewer.setFixedHeight(self.IMAGEVIEWER_H)
         self.skel_viewer.setImg(self.image_cropped)
 
         #draw blobs
@@ -173,66 +198,159 @@ class RowsWidget(QWidget):
         self.actionShowEdges.toggled.connect(self.toggleShowEdges)
         self.edges_checked = False
 
+        self.actionShowRows = QAction("Show Rows", self)
+        
+        self.actionShowRows.setCheckable(False)
+        self.actionShowRows.toggled.connect(self.toggleShowRows)
+        self.rows_checked = False
+
+        self.actionShowColumns = QAction("Show Columns", self)
+        
+        self.actionShowColumns.setCheckable(False)
+        self.actionShowColumns.toggled.connect(self.toggleShowColumns)
+        self.columns_checked = False
+
         skel_viewer_layout.addWidget(self.skel_viewer, alignment=Qt.AlignTop)
 
         skel_viewer_layout.setSpacing(15)
         
         
-        brickwidth_layout = QHBoxLayout()
-        self.default_width = 150
-        #textbox to set brick width 
-        brickwidth_label = QLabel(f"Brick width:")
-        self.BrickWidthBox = QLineEdit(self)
-        self.BrickWidthBox.setReadOnly(False)
-        self.BrickWidthBox.setFixedWidth(150)
-        self.BrickWidthBox.setFixedHeight(25)
-        self.BrickWidthBox.setText(str(self.default_width))
+        brickdist_layout = QVBoxLayout()
 
-        self.default_dist = 10
-        brickdist_label = QLabel(f"Rows distance:")
-        self.BrickDistBox = QLineEdit(self)
-        self.BrickDistBox.setReadOnly(False)
-        self.BrickDistBox.setFixedWidth(150)
-        self.BrickDistBox.setFixedHeight(25)
-        self.BrickDistBox.setText(str(self.default_dist))
+        self.row_dist = 20
+        self.set_angle = 45
 
-        # layout.addWidget(self.angleTextBox)
-        brickwidth_layout.addWidget(brickwidth_label, alignment=Qt.AlignLeft)
-        brickwidth_layout.setSpacing(5)
-        brickwidth_layout.addWidget(self.BrickWidthBox, alignment=Qt.AlignLeft)
+        if self.scale:
+            unit = "mm"
+        else:
+            unit = "px"
 
-        brickwidth_layout.addWidget(brickdist_label, alignment=Qt.AlignLeft)
-        brickwidth_layout.setSpacing(5)
-        brickwidth_layout.addWidget(self.BrickDistBox, alignment=Qt.AlignLeft)
+        brickdist_label = QLabel(f"Rows/Columns Distance ({unit}):")
+        # self.BrickDistBox = QLineEdit(self)
+        # self.BrickDistBox.setReadOnly(False)
+        # self.BrickDistBox.setFixedWidth(150)
+        # self.BrickDistBox.setFixedHeight(25)
+        # self.BrickDistBox.setText(str(self.row_dist))
 
         
-        skel_viewer_layout.addLayout(brickwidth_layout)
-        skel_viewer_layout.setSpacing(10)
+        # brickdist_layout.addWidget(brickdist_label, alignment=Qt.AlignCenter)
+        # brickdist_layout.addWidget(self.BrickDistBox, alignment=Qt.AlignLeft)
+        # brickdist_layout.setSpacing(2)
 
-        skelangle_layout = QVBoxLayout()
-        skelangle_label = QLabel(f"Slopes")
-        self.skelTextBox = QTextEdit(self)
-        self.skelTextBox.setReadOnly(True)
-        self.skelTextBox.setFixedWidth(IMAGEVIEWER_W)
-        self.skelTextBox.setFixedHeight(TEXTBOX_H)
+        self.BrickDistSlider = QSlider(Qt.Horizontal)
+        self.BrickDistSlider.setMinimum(5)
+        self.BrickDistSlider.setMaximum(200) 
+        self.BrickDistSlider.setValue(self.row_dist)
+        self.BrickDistSlider.setFixedWidth(self.IMAGEVIEWER_W)
+        self.BrickDistSlider.setTickPosition(QSlider.TicksBelow)
+        self.BrickDistSlider.setTickInterval(2)
+        self.BrickDistSlider.setToolTip("Set the distance threshold between rows or columns")
+
+        if self.scale:
+            self.BrickDistValueLabel = QLabel(str((self.row_dist)* float(self.scale)))
+            self.BrickDistSlider.valueChanged.connect(
+                lambda val: self.BrickDistValueLabel.setText(str(val * float(self.scale)))
+            )
+        else:
+            self.BrickDistValueLabel = QLabel(str(self.row_dist))
+            self.BrickDistSlider.valueChanged.connect(
+                lambda val: self.BrickDistValueLabel.setText(str(val))
+            )           
+
+        angle_label = QLabel(f"Rows/Columns Angle (degree):")
+        self.AngleSlider = QSlider(Qt.Horizontal)
+        self.AngleSlider.setMinimum(0)
+        self.AngleSlider.setMaximum(90) 
+        self.AngleSlider.setValue(self.set_angle)
+        self.AngleSlider.setFixedWidth(self.IMAGEVIEWER_W)
+        self.AngleSlider.setTickPosition(QSlider.TicksBelow)
+        self.AngleSlider.setTickInterval(1)
+        self.AngleSlider.setToolTip("Set the angle threshold for row (maximum) and column (minimum) detection (degrees)")
+
+        self.AngleValueLabel = QLabel(str(self.set_angle))
+        self.AngleSlider.valueChanged.connect(
+            lambda val: self.AngleValueLabel.setText(str(val))
+        )
+        # Add color palette for skeleton, edges, rows and columns
+        color_layout = QHBoxLayout()
+
+        self.skeleton_color = QColor(0, 0, 255)  # Default blue
+        self.skeletonColorButton = QPushButton("Skeleton Color")
+        self.skeletonColorButton.setToolTip("Select the color for skeleton.")
+        self.skeletonColorButton.setStyleSheet(f"background-color: {self.skeleton_color.name()};")
+        self.skeletonColorButton.clicked.connect(self.chooseSkeletonColor)
+
+        self.edge_color = QColor(0, 255, 0)  # Default green
+        self.edgeColorButton = QPushButton("Edge Color")
+        self.edgeColorButton.setToolTip("Select the color for edge.")
+        self.edgeColorButton.setStyleSheet(f"background-color: {self.edge_color.name()};")
+        self.edgeColorButton.clicked.connect(self.chooseEdgeColor)
+        
+        self.row_color = QColor(255, 140, 0)  # Default orange
+        self.rowColorButton = QPushButton("Row Color")
+        self.rowColorButton.setToolTip("Select the color for row segments.")
+        self.rowColorButton.setStyleSheet(f"background-color: {self.row_color.name()};")
+        self.rowColorButton.clicked.connect(self.chooseRowColor)
+
+        self.column_color = QColor(102, 0, 153)  # Default deep purple
+        self.columnColorButton = QPushButton("Column Color")
+        self.columnColorButton.setToolTip("Select the color for column segments.")
+        self.columnColorButton.setStyleSheet(f"background-color: {self.column_color.name()};")
+        self.columnColorButton.clicked.connect(self.chooseColumnColor)
+
+        # Add color buttons to the layout
+        color_layout.addWidget(self.skeletonColorButton, alignment=Qt.AlignCenter)
+        color_layout.addWidget(self.edgeColorButton, alignment=Qt.AlignCenter)
+        color_layout.addWidget(self.rowColorButton, alignment=Qt.AlignCenter)
+        color_layout.addWidget(self.columnColorButton, alignment=Qt.AlignCenter)
+
+        # Add "Update" button
+        self.btnUpdateValues = QPushButton("Update")
+        self.btnUpdateValues.setToolTip("Update distance and angle values and colors from the sliders.")
+        self.btnUpdateValues.clicked.connect(self.updateDistAngle)
+
+
+        brickdist_layout.addWidget(brickdist_label, alignment=Qt.AlignCenter)
+        brickdist_layout.addWidget(self.BrickDistSlider, alignment=Qt.AlignCenter)
+        brickdist_layout.addWidget(self.BrickDistValueLabel, alignment=Qt.AlignCenter)
+        brickdist_layout.setSpacing(2)
+
+        brickdist_layout.addWidget(angle_label, alignment=Qt.AlignCenter)
+        brickdist_layout.addWidget(self.AngleSlider, alignment=Qt.AlignCenter)
+        brickdist_layout.addWidget(self.AngleValueLabel, alignment=Qt.AlignCenter)
+        brickdist_layout.setSpacing(2)
+
+        brickdist_layout.addLayout(color_layout)
+
+        brickdist_layout.addWidget(self.btnUpdateValues, alignment=Qt.AlignCenter)
+        
+        self.BrickDistSlider.setEnabled(False)
+        self.AngleSlider.setEnabled(False)
+        self.btnUpdateValues.setEnabled(False)
+    
+        # skelangle_layout = QVBoxLayout()
+        # skelangle_label = QLabel(f"Slopes")
+        # self.skelTextBox = QTextEdit(self)
+        # self.skelTextBox.setReadOnly(True)
+        # self.skelTextBox.setFixedWidth(self.IMAGEVIEWER_W)
+        # self.skelTextBox.setFixedHeight(TEXTBOX_H)
         # layout.addWidget(self.angleTextBox)
         # Add export lines
-        self.btnSkelExport = QPushButton("Export Skeleton Data")
-        self.btnSkelExport.clicked.connect(self.exportSkelViewerData)
+        # self.btnSkelExport = QPushButton("Export Skeleton Data")
+        # self.btnSkelExport.clicked.connect(self.exportSkelViewerData)
         # skel_viewer_layout.addWidget(self.btnSkelExport, alignment=Qt.AlignTop)
-        skelangle_layout.setSpacing(5)  # Reduce spacing to bring QLabel closer to QTextEdit
+        # skelangle_layout.setSpacing(5)  # Reduce spacing to bring QLabel closer to QTextEdit
+        # skel_viewer_layout.addWidget(self.btnSkelExport, alignment=Qt.AlignBottom)
 
         
-        skelangle_layout.addWidget(skelangle_label, alignment=Qt.AlignBottom)
-        skelangle_layout.addWidget(self.skelTextBox, alignment=Qt.AlignTop)
-        skelangle_layout.addWidget(self.btnSkelExport, alignment=Qt.AlignTop)
+        # skelangle_layout.addWidget(skelangle_label, alignment=Qt.AlignBottom)
+        # skelangle_layout.addWidget(self.skelTextBox, alignment=Qt.AlignTop)
+        # skelangle_layout.addWidget(self.btnSkelExport, alignment=Qt.AlignTop)
 
-        skel_viewer_layout.addLayout(skelangle_layout)
+        # skel_viewer_layout.addLayout(skelangle_layout)
 
         # skel_viewer_layout.setSpacing(5)
 
-
-        
         # Create a horizontal layout for the viewers
         viewers_layout = QHBoxLayout()
         
@@ -247,7 +365,7 @@ class RowsWidget(QWidget):
         viewers_layout.addLayout(skel_viewer_layout)
         # Add the viewers to the main layout
         
-        viewers_layout.setSpacing(10)
+        # viewers_layout.setSpacing(10)
 
         # Add the viewers layout to the main layout
         # layout.addLayout(viewers_layout)
@@ -256,12 +374,11 @@ class RowsWidget(QWidget):
         # layout.addWidget(self.viewer, alignment=Qt.AlignCenter)
         # layout.addLayout(layoutButtons)
 
-        #Create the layout
-        layout = QVBoxLayout()
-
-        layout.setSpacing(10)
-
-        layout.addLayout(viewers_layout)        
+        textbox_layout = QHBoxLayout()
+        # Add line slopes and rows distance widgets to the layout
+        textbox_layout.addLayout(lineslopes_layout)
+        textbox_layout.setSpacing(10)
+        textbox_layout.addLayout(brickdist_layout)   
 
         # self.angleTextBox = QTextEdit(self)
         # self.angleTextBox.setReadOnly(True)
@@ -269,88 +386,182 @@ class RowsWidget(QWidget):
 
         # self.setLayout(layout)
 
+        # layout.addWidget(self.btnExport)#, alignment=Qt.AlignCenter)
+
         # Add slider for structuring element size
         slider_layout = QVBoxLayout()
         self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimum(1)
-        self.slider.setMaximum(50)
-        self.slider.setValue(21)
+        self.slider.setMinimum(5)
+        self.slider.setMaximum(25)
+        self.slider.setValue(13)
         self.slider.setTickPosition(QSlider.TicksBelow)
         self.slider.setTickInterval(1)
-        self.slider.valueChanged.connect(self.updateStructuringElement)
         self.slider.setFixedHeight(30)
-
-        value = self.slider.value()
-
-        if self.scale:
-            self.slider_label = QLabel(f"Joint Thickness (mm): {((value-1)//2) * float(self.scale)}")
-        else:
-            self.slider_label = QLabel(f"Joint Thickness (px): {((value-1)//2)}")
-        
-
+        self.slider_label = QLabel("")
         self.slider_label.setFixedHeight(30)
-        
-        slider_layout.addWidget(self.slider_label)
         slider_layout.addWidget(self.slider)
+        slider_layout.addWidget(self.slider_label)
 
-        self.structuring_element_size = self.slider.value()
-        layout.addLayout(slider_layout)
-
-        layout.setSpacing(10)
+        self.slider.valueChanged.connect(self.updateStructuringElement)
+        self.updateStructuringElement(self.slider.value())
         
-        button_layout = QHBoxLayout()
-        self.btnOk = QPushButton("OK")
-        self.btnOk.clicked.connect(self.applyHough)
-        button_layout.addWidget(self.btnOk)
+        # buttons for data processing
+        data_button_layout = QHBoxLayout()
+        
+        self.btnCompute = QPushButton("Compute")
+        self.btnCompute.clicked.connect(self.computeRows)
+        
+        self.btnThickness = QPushButton("Compute Thickness Map")
+        self.btnThickness.clicked.connect(lambda: self.thicknessMap(self.work_mask))
+        
+        data_button_layout.setAlignment(Qt.AlignLeft)
+        data_button_layout.addWidget(self.btnCompute)
+        data_button_layout.addWidget(self.btnThickness)
+        self.btnThickness.setEnabled(False)
+        data_button_layout.addStretch()
 
+
+        #buttons for output
+        output_button_layout = QHBoxLayout()
+        self.btnBlob = QPushButton("Add mask as region to project")
+        self.btnBlob.clicked.connect(self.addMaskToProject)
+        self.btnBlob.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btnBlob.setEnabled(False)
+        self.btnBlob.setToolTip("Add the mask as a region to the project, so it can be used in other analyses.")
+        self.btnExport = QPushButton("Export Data")
+        self.btnExport.clicked.connect(self.exportData)
+        self.btnExport.setEnabled(False)
+        output_button_layout.addWidget(self.btnBlob)
+        output_button_layout.addWidget(self.btnExport)
+        output_button_layout.setAlignment(Qt.AlignLeft)
+
+        # separator line for visual separation
+        separator = QLabel()
+        separator.setFixedHeight(3)
+        separator.setStyleSheet("background-color: #666; margin-top: 10px; margin-bottom: 10px;")
+
+        # bottom row buttons
+        bottom_layout = QHBoxLayout()
         self.btnClose = QPushButton("Close")
         self.btnClose.clicked.connect(self.closeWidget)
-        button_layout.addWidget(self.btnClose)
-        layout.addLayout(button_layout)
+        bottom_layout.setAlignment(Qt.AlignRight)
+        bottom_layout.addStretch()
+        bottom_layout.addWidget(self.btnClose)
+
+        ##########################################################################################################################
+        #Create the full window layout and assemble the widgets
+        layout = QVBoxLayout()
+
+        layout.setSpacing(10)
+        # Add the viewers layout to the main layout
+        layout.addLayout(viewers_layout) 
+        layout.addLayout(textbox_layout, stretch=1)    
+        layout.addLayout(slider_layout)
+        layout.setSpacing(10)
+        # Add the button rows
+        layout.addLayout(data_button_layout)
+        layout.addLayout(output_button_layout)
+        # separator line
+        layout.addWidget(separator)
+        # Add the bottom layout with the close button
+        layout.addLayout(bottom_layout)
 
         # self.line_viewer.setImg(self.image_cropped)
         # self.skel_viewer.setImg(self.image_cropped)
 
-        self.setLayout(layout)    
+        self.setLayout(layout)
+
+    def chooseSkeletonColor(self):
+        color = QColorDialog.getColor(self.skeleton_color, self, "Select Skeleton Color")
+        if color.isValid():
+            self.skeleton_color = color
+            self.skeletonColorButton.setStyleSheet(f"background-color: {self.skeleton_color.name()};")            
+
+    def chooseEdgeColor(self):
+        color = QColorDialog.getColor(self.edge_color, self, "Select Edge Color")
+        if color.isValid():
+            self.edge_color = color
+            self.edgeColorButton.setStyleSheet(f"background-color: {self.edge_color.name()};")           
     
+    def chooseColumnColor(self):
+        color = QColorDialog.getColor(self.column_color, self, "Select Column Color")
+        if color.isValid():
+            self.column_color = color
+            self.columnColorButton.setStyleSheet(f"background-color: {self.column_color.name()};")
+
+    def chooseRowColor(self):
+            color = QColorDialog.getColor(self.row_color, self, "Select Row Color")
+            if color.isValid():
+                self.row_color = color
+                self.rowColorButton.setStyleSheet(f"background-color: {self.row_color.name()};")
+
     def updateStructuringElement(self, value):
-        self.structuring_element_size = value
+        self.structuring_element_size = value*2  # The slider value is multiplied by 2 to always have even expansion
         if self.scale:
-            self.slider_label.setText(f"Joint Thickness (mm): {((value-1)//2) * float(self.scale)}")
+            self.slider_label.setText(f"Joint Thickness (mm): {(value*2) * float(self.scale)}")
         else:
-            self.slider_label.setText(f"Joint Thickness (px): {((value-1)//2)}")
+            self.slider_label.setText(f"Joint Thickness (px): {(value*2)}")
             
-    def applyHough(self):
-        if self.set_textbox == True:
+    def updateDistAngle(self):
+        #Update self.row_dist and self.set_angle from the sliders.
+        self.row_dist = self.BrickDistSlider.value()
+        self.set_angle = self.AngleSlider.value()
+        print(f"Updated row_dist: {self.row_dist}, set_angle: {self.set_angle}")
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+    
+    def computeRows(self):
+        if self.set_anglebox == True or self.set_thickbox == True:
             self.resetAngleTextBox()
 
-        _, self.masch = self.maskGrow(self.maschera, self.structuring_element_size)
-        # self.houghTansformation(final_mask)
-        self.lines = self.houghTansformation(self.masch)
+        # enable export buttons
+        self.btnBlob.setEnabled(True)
+        self.btnExport.setEnabled(True)
+
+        # grow the original mask to create the working one
+        self.work_mask = self.maskGrow(self.original_mask, self.structuring_element_size)
+
+        # hough transformation to detect lines
+        self.lines = self.houghTransformation(self.work_mask)
+
+        # skeletonize the work_mask
+        self.skeleton = self.applySkeletonization(self.work_mask)
 
         self.actionShowLines.setCheckable(True)
         self.actionShowMask.setCheckable(True)
+        # self.actionShowThickness.setCheckable(True)
         self.actionShowBlobs.setCheckable(True)
 
         self.line_checked = True
         self.actionShowLines.setChecked(True)
         self.mask_checked = True
         self.actionShowMask.setChecked(True)
-        self.toggleMaskLines(self.line_checked, self.mask_checked, self.blobs_checked)
+        
+        self.toggleMaskLines(self.line_checked, self.mask_checked, self.thickness_checked, self.blobs_checked)
+        self.toggleShowLines(self.line_checked)
+        self.toggleShowMask(self.mask_checked)
 
-        # i += 1
-        self.skeleton = self.applySkeletonization(self.masch)
-        self.branch_points = self.branchPoints(self.skeleton)
+        self.btnThickness.setEnabled(True)
+        
+        # Get row_distance from  BrickDistBox
+        # try:
+        #     self.row_dist = int(self.BrickDistBox.text())
+        # except ValueError:
+        #     self.row_dist = 20
 
-            # Get brick_width and row_distance from BrickWidthBox and BrickDistBox
-        try:
-            brick_width = int(self.BrickWidthBox.text())
-            brick_dist = int(self.BrickDistBox.text())
-        except ValueError:
-            brick_width = self.default_width  # Default value if no valid input is provided
-            brick_dist = self.default_dist
+        self.row_dist = self.BrickDistSlider.value()
+        print(self.row_dist)
 
-        self.connectBranchPoints(self.branch_points, brick_width, brick_dist)
+        self.set_angle = self.AngleSlider.value()
+        print(self.set_angle)
+
+        self.BrickDistSlider.setEnabled(True)
+        self.AngleSlider.setEnabled(True)
+        self.btnUpdateValues.setEnabled(True)
+
+        self.branch_points, self.edges = self.vectorBranchPoints(self.skeleton)
+        print(f"Branch points self len is {len(self.branch_points)}")
+
+        # self.connectBranchPoints(self.branch_points, brick_width, brick_dist)
         # print(self.branch_points)
         self.actionShowSkel.setCheckable(True)
 
@@ -362,82 +573,83 @@ class RowsWidget(QWidget):
         self.actionShowBranch.setCheckable(True)
         self.actionShowBranch.setChecked(True)
         self.actionShowEdges.setCheckable(True)
-        # self.actionShowBranch.setChecked(True)
-        branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked)
+
+        self.updateRowsColumns(self.edges)
+
+        self.actionShowRows.setCheckable(True)
+        self.actionShowColumns.setCheckable(True)
+
+        branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
         self.skel_viewer.setOpacity(1.0)
         self.skel_viewer.setOverlayImage(branch_image)
 
-
-        # self.connectBranchPoints(self.branch_points)
-        # _, _, img = self.vectorBranchPoints(skel)
-                
-        # _, skel_int = self.findIntersectionPoints(skel)
-        # self.vectorBranchPoints(skel)
-
-        # # # self.connectSkeletonIntersections(skel)
-        # self.houghTansformation(skel, i) 
     
     def closeWidget(self):
         self.closeRowsWidget.emit()
         self.close()
 
     def maskGrow(self, mask, value):
-        #GROW DEI BLOB, LA MALTA È QUELLA CHE DISTA x PIXEL DAL BLOB
-        rect_mask_grow = mask.copy()
-
-        # Create a structuring element that defines the neighborhood
-        # 21x21 to cover 10 positions around each 1 (10 positions
+        # Create structuring elements for dilation and erosion 
         structuring_element = np.ones((value, value), dtype=np.uint8)
         structuring_element_half = np.ones((value//2, value//2), dtype=np.uint8)
-        print(f"Structuring element size: {value}")
-        rect_mask_grow = binary_dilation(mask, structure=structuring_element)
-        rect_mask_grow_sub = rect_mask_grow - mask
 
-        # rect_mask_grow = rect_mask_grow - mask
-
-        # Save the rect_mask_grow as a matplotlib figure
+        # DEBUG: Save the work_mask as a matplotlib figure
         # plt.figure(figsize=(10, 10))
-        # plt.imshow(rect_mask_grow_sub, cmap='gray')
+        # plt.imshow(mask, cmap='gray')
         # plt.axis('off')
-        # plt.savefig("rect_mask_grow.png", bbox_inches='tight', pad_inches=0)
+        # plt.savefig("work_mask_original.png", bbox_inches='tight', pad_inches=0)
         # plt.close()
 
-        rect_mask_eroded = binary_erosion(rect_mask_grow, structure=structuring_element_half)
-
-        # Save the rect_mask_eroded as a matplotlib figure
+        # Dilate the mask to create a work_mask
+        work_mask = binary_dilation(mask, structure=structuring_element)
+       
+        # DEBUG: Save the work_mask as a matplotlib figure
         # plt.figure(figsize=(10, 10))
-        # plt.imshow(rect_mask_eroded, cmap='gray')
+        # plt.imshow(work_mask, cmap='gray')
         # plt.axis('off')
-        # plt.savefig("rect_mask_eroded.png", bbox_inches='tight', pad_inches=0)
+        # plt.savefig("work_mask_dilated.png", bbox_inches='tight', pad_inches=0)
         # plt.close()
 
-        rect_mask_final = rect_mask_eroded - mask
+        # Erode the dilated mask to create a work_mask
+        work_mask = binary_erosion(work_mask, structure=structuring_element_half)
 
-        # Save the rect_mask_eroded as a matplotlib figure
+        # DEBUG: Save the work_mask as a matplotlib figure
         # plt.figure(figsize=(10, 10))
-        # plt.imshow(rect_mask_final, cmap='gray')
+        # plt.imshow(work_mask, cmap='gray')
         # plt.axis('off')
-        # plt.savefig("rect_mask_final.png", bbox_inches='tight', pad_inches=0)
+        # plt.savefig("work_mask_eroded.png", bbox_inches='tight', pad_inches=0)
         # plt.close()
 
-        return rect_mask_grow_sub, rect_mask_final
+        # Subtract the original mask to get the final work_mask
+        work_mask = work_mask - mask
+
+        # DEBUG: Save the work_mask as a matplotlib figure
+        # plt.figure(figsize=(10, 10))
+        # plt.imshow(work_mask, cmap='gray')
+        # plt.axis('off')
+        # plt.savefig("work_mask_final.png", bbox_inches='tight', pad_inches=0)
+        # plt.close()
+
+        return work_mask
     
+
     def updateAngleTextBox(self, angles, index, color='red'):
         current_text = self.angleTextBox.toHtml()
-        new_text = ''.join([f'<span style="color: {color};">line {str(index+1)}: {angle}</span><br>' for angle in angles])
+        new_text = ''.join([f'<div style="color: {color};">line {str(index+1)}: {angle}</div>' for angle in angles])
         self.angleTextBox.setHtml(current_text + new_text)
     
     def resetAngleTextBox(self):
         self.angleTextBox.clear()
-        self.set_textbox = False
+        self.set_anglebox = False
+        self.set_thickbox = False
 
-    def updateSkelTextBox(self, angles, index, color='red'):
-        current_text = self.skelTextBox.toHtml()
-        new_text = ''.join([f'<span style="color: {color};">line {str(index+1)}: {angle}</span><br>' for angle in angles])
-        self.skelTextBox.setHtml(current_text + new_text)
+    # def updateSkelTextBox(self, angles, index, color='red'):
+    #     current_text = self.skelTextBox.toHtml()
+    #     new_text = ''.join([f'<span style="color: {color};">line {str(index+1)}: {angle}</span><br>' for angle in angles])
+    #     self.skelTextBox.setHtml(current_text + new_text)
 
-    def resetSkelTextBox(self):
-        self.skelTextBox.clear()
+    # def resetSkelTextBox(self):
+    #     self.skelTextBox.clear()
         # self.set_textbox = False
 
     def boundary_clamp(self, mask, x0, y0, x1, y1):
@@ -467,9 +679,21 @@ class RowsWidget(QWidget):
             # Line does not intersect the non-zero mask area
             return None
     
-    def houghTansformation(self, mask):
+    # converts the angle found by hough transformation to a value in degrees where 0 is horizontal and positive is counter-clockwise
+    def hougAngleToValue(self, angle, decimal_places=2):
+        # Convert angle in radians to degrees
+        angle_deg = np.rad2deg(angle)
+        angle_deg -= 90
+        angle_deg = -angle_deg
+        angle_deg = round(angle_deg, decimal_places)
+        return angle_deg
+
+    def houghTransformation(self, mask):
+
+        # Range of angles from 75 to 105 degrees
+        range = np.linspace(np.pi/180*75, np.pi/180*105, 180)
         # Apply the Hough Line Transformation
-        h, theta, d = hough_line(mask)
+        h, theta, d = hough_line(mask, range)
 
         # Visualize the Hough Transform accumulator
         # plt.figure(figsize=(10, 6))
@@ -491,8 +715,8 @@ class RowsWidget(QWidget):
             # Calculate line endpoints
             try:
                 # Points for the line at the left and right image boundaries
-                y0 = (dist - 0 * np.cos(angle)) / np.sin(angle)  # y-intercept at x=0
-                y1 = (dist - width * np.cos(angle)) / np.sin(angle)  # y-intercept at x=width
+                y0 = (dist - (0 * np.cos(angle))) / np.sin(angle)  # y-intercept at x=0
+                y1 = (dist - (width * np.cos(angle))) / np.sin(angle)  # y-intercept at x=width
 
                 # Check for valid values within the image bounds
                 if np.isfinite(y0) and np.isfinite(y1):  # Ensure values are not infinite
@@ -504,6 +728,7 @@ class RowsWidget(QWidget):
                         # print(point1, point2)
                         if point1 and point2:
                             lines.append((point1, point2, angle))
+                            print(f"Line detected: {point1}, {point2}, angle: {self.hougAngleToValue(angle)}")
 
                     # if 0 <= y0 < height and 0 <= y1 < height:  # Clamp to image bounds
                     #     lines.append(((0, int(y0)), (width, int(y1)), angle))
@@ -570,9 +795,9 @@ class RowsWidget(QWidget):
         
         # print(f"Intersections list: {intersections}")        
         intersections_cut = []
-        plt.figure(figsize=(8, 8))
-        plt.imshow(mask, cmap='gray')
-        plt.axis('off')        
+        # plt.figure(figsize=(8, 8))
+        # plt.imshow(mask, cmap='gray')
+        # plt.axis('off')        
         
         for (line1, line2, (ix, iy)) in intersections:
             (x1, y1), (x2, y2), ang1 = line1
@@ -607,7 +832,7 @@ class RowsWidget(QWidget):
 
         # plt.title('Detected Lines and Intersections')
         # plt.savefig("spezzate_with_intersections.png", bbox_inches='tight', pad_inches=0)
-        # plt.close()
+        plt.close()
        
         # # Remove intersectin lines with smaller angles
         # for line1, line2 in intersections:
@@ -639,20 +864,6 @@ class RowsWidget(QWidget):
             lines_with_color.append(line_with_color)
 
         sorted_lines_with_color = sorted(lines_with_color, key=lambda entry: entry[0][1])
-
-        for i, (_, _, ang, color) in enumerate(sorted_lines_with_color):
-        # for i, (_, _,ang, color) in enumerate(sorted_lines_with_color):            
-            if ang < 0:
-                ang = np.pi/2 + ang  
-            else:
-                ang = ang - np.pi/2
-
-            ang_deg = np.rad2deg(ang)
-            # ang = round(ang, 4)
-            ang_deg = round(ang_deg, 4)
-
-            self.updateAngleTextBox([ang_deg], i, color=f'rgb({color[0]},{color[1]},{color[2]})')
-        self.set_textbox = True
         
         return sorted_lines_with_color
     
@@ -685,9 +896,9 @@ class RowsWidget(QWidget):
 
     def applySkeletonization(self, mask):
         # Apply skeletonization
-        # skeleton = skeletonize(mask)
+        skeleton = skeletonize(mask)
         # skeleton = median(skeleton, disk(1))
-        skeleton = thin(mask)
+        # skeleton = thin(mask)
         
         # h, w = skeleton.shape
         # dwg = svgwrite.Drawing(f"skeleton.svg", size=(w, h))
@@ -707,130 +918,344 @@ class RowsWidget(QWidget):
         # plt.title('Skeletonized Mask')
         # plt.savefig("skeletonized_mask.png", bbox_inches='tight', pad_inches=0)
         # plt.close()
-
         return skeleton
-     
-    def branchPoints(self, skeleton, filename="skeleton_vector.svg"):
-        # Define a kernel to detect branch points
-        kernel = np.array([[1, 1, 1],
-                   [1, 10, 1],
-                   [1, 1, 1]])
 
-        # Convolve the skeleton with the kernel
-        convolved = convolve(skeleton.astype(np.uint8), kernel, mode='constant', cval=0) - 10
+    def thicknessMap(self, mask):
 
-        # Find branch points where the convolved result equals 11
-        branch_points = (convolved >= 3) & skeleton
-
-        # Get coordinates
-        # endpoints_yx = np.column_stack(np.where(endpoints))
-        branch_points_yx = np.column_stack(np.where(branch_points))
-
-        # Remove branch points that are too close to each other
-        filtered_branch_points_yx = []
-        for point in branch_points_yx:
-            if not any(np.linalg.norm(point - np.array(existing_point)) < 5 for existing_point in filtered_branch_points_yx):
-                filtered_branch_points_yx.append(point)
-
-################################################################################################
-        # h, w = skeleton.shape
-        # dwg = svgwrite.Drawing('pippo.svg', size=(w, h))
+        # Method to get a thickness map from mask
+        dist = distance_transform_edt(mask)
         
-        # # Draw skeleton as black lines
-        # y, x = np.where(skeleton)
-        # for i in range(len(y)):
-        #     dwg.add(dwg.circle(center=(int(x[i]), int(y[i])), r=0.5, fill="blue"))
+        # plt.figure(figsize=(10, 5))
+        # # plt.subplot(1, 2, 2)
+        # plt.title("Distance Transform")
+        # plt.imshow(dist, cmap='viridis')
+        # plt.colorbar()
+        # plt.savefig("dist.png", bbox_inches='tight', pad_inches=0)
+        # plt.close()
 
-        # # Draw branch points as red circles
-        # for point in filtered_branch_points_yx:
-        #     dwg.add(dwg.circle(center=(int(point[1]), int(point[0])), r=2, fill="red"))
+        thickness = dist * 2
 
-        # # Save SVG file
-        # dwg.save()
-        # print(f"Saved SVG as pippo.svg")
- 
-        return filtered_branch_points_yx
+        thickness_nonzero = thickness[mask > 0]
+        mean_thickness = np.mean(thickness_nonzero)
+        max_thickness = np.max(thickness_nonzero)
+        min_thickness = np.min(thickness_nonzero)
+        self.thickness_data = [mean_thickness, max_thickness, min_thickness]
+
+        # mean_thickness = np.mean(thickness)
+        # print(f"Mean thickness along skeleton: {mean_thickness:.2f} pixels")
+        
+
+        if thickness.max() > 0:
+            norm = thickness / thickness.max()
+            norm = np.power(norm, 0.5)
+        else:
+            norm = (thickness * 0)
+
+        # Create QImage from numpy array
+        h, w = thickness.shape
+        thickness_img = QImage(w, h, QImage.Format_RGB32)
+
+        cmap = cm.get_cmap('viridis')
+
+        for y in range(h):
+            for x in range(w):
+                if mask[y, x]:
+                    v = norm[y, x]
+                    
+                    # Colormap with green gradient (very flat)
+                    # r = 0
+                    # g = int(255 - 255 * v)
+                    # g = max(0, min(255, g))
+                    # b = 0
+
+                    # Colormap with viridis gradient of matplotlib
+                    r_f, g_f, b_f, _ = cmap(v)
+                    r = int(r_f * 255)
+                    g = int(g_f * 255)
+                    b = int(b_f * 255)
+                    thickness_img.setPixelColor(x, y, QColor(r, g, b))
+                else:
+                    thickness_img.setPixelColor(x, y, QColor(0, 0, 0))  # black background
+        
+        # # Colormap in grayscale
+        # if thickness.max() > 0:
+        #     thickness_norm = (thickness / thickness.max() * 255).astype(np.uint8)
+        # else:
+        #     thickness_norm = (thickness * 0).astype(np.uint8)
+
+        # # Create QImage from numpy array
+        # h, w = thickness_norm.shape
+        # thickness_img = QImage(thickness_norm.data, w, h, w, QImage.Format_Grayscale8).copy()
+
+        # thickness_img.save("thickness_image.png", "PNG")
+        
+        self.thickness_image = thickness_img
+        
+        self.thickness_checked = True
+        self.actionShowThickness.setCheckable(True)
+        self.actionShowThickness.setChecked(True)
+
+        self.toggleShowThickness(self.thickness_checked)
+        # return thickness_img
+    
+    def updateThicknessTextBox(self, thickness_data, color='white'):
+        
+        #Update the angleTextBox with thickness statistics.
+
+        if self.scale:
+            thickness_data = [
+                value * float(self.scale) for value in thickness_data
+            ]
+            unit = "mm"
+        else:
+            unit = "px"
+
+
+        mean_thickness, max_thickness, min_thickness = thickness_data
+
+        # print(f"Mean thickness: {mean_thickness:.2f} {unit}")
+        # print(f"Max thickness: {max_thickness:.2f} {unit}")
+        # print(f"Min thickness: {min_thickness:.2f} {unit}")
+
+        text = (
+            f'<div style="color: {color};">'
+            f"<b>Thickness Statistics:</b><br>"
+            f"Mean: {mean_thickness:.2f} {unit}<br>"
+            f"Max: {max_thickness:.2f} {unit}<br>"
+            f"Min: {min_thickness:.2f} {unit}<br>"
+            f"</div>"
+        )
+        current_text = self.angleTextBox.toHtml()
+        self.angleTextBox.setHtml(current_text + text)
 
     def vectorBranchPoints(self,skeleton):
 
         # Extract skeleton pixels
         y, x = np.where(skeleton)
+        coords = list(zip(y, x))
 
-        zipped = zip(y,x)
-
-        # Create a graph from skeleton
+        # Create graph
         G = nx.Graph()
-        for (i, j) in zip(y, x):
-            G.add_node((i, j))
+        neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1),
+                            ( 0, -1),          ( 0, 1),
+                            ( 1, -1), ( 1, 0), ( 1, 1)]
 
-        # Find edges (connect nearby pixels)
-        # for (i, j) in zip(y, x):
-        for (i, j) in zipped:
-            for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:  # 4-neighborhood
-                ni, nj = i + dy, j + dx
-                if (ni, nj) in G:
-                    G.add_edge((i, j), (ni, nj))
+        skeleton_set = set(coords)  # for fast lookup
 
+        for y0, x0 in coords:
+            for dy, dx in neighbor_offsets:
+                neighbor = (y0 + dy, x0 + dx)
+                if neighbor in skeleton_set:
+                    G.add_edge((x0, y0), (neighbor[1], neighbor[0]))  # note: (x, y) order
 
-        print(len(G.nodes()))
-        # Draw nodes and edges of the graph
-        pos = {node: (node[1], -node[0]) for node in G.nodes()}  # Flip y-axis for correct orientation
+        # Branch points: nodes with degree > 2
+        branch_points = [node for node in G.nodes if G.degree(node) > 2]
+        # print(f"length of branch points pre: {len(branch_points)}")
 
-        nx.draw_networkx_nodes(G, pos, node_size=0.25, node_color="red")
-        nx.draw_networkx_edges(G, pos, width=2, edge_color="blue")
+        # remove branch points that are too close to each other
+        filtered_branch_points = []
+        min_dist = 2
+        taken = set()
+        pt_mapping = {}
 
-        img = self.saveGraphToQImage(G, pos, skeleton)
-    
-        return G, pos, img
-    
-    def saveGraphToQImage(self, graph, pos, skeleton, output_file="graph.png"):
+        for i, pt1 in enumerate(branch_points):
+            if i in taken:
+                continue
+            group = [pt1]
+            group_indices = [i]
 
-        width, height = skeleton.shape[1], skeleton.shape[0]
-        # Create a QImage with the specified dimensions
-        q_image = QImage(skeleton.shape[1], skeleton.shape[0], QImage.Format_ARGB32)
-        q_image.fill(Qt.white)  # Fill the background with white
+            for j, pt2 in enumerate(branch_points):
+                if j <= i or j in taken:
+                    continue
+                dist = np.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1])
+                if dist < min_dist:
+                    group.append(pt2)
+                    group_indices.append(j)
 
-        # Create a QPainter to draw on the QImage
-        painter = QPainter(q_image)
-        pen = QPen(Qt.black, 1)  # Black pen for edges
-        painter.setPen(pen)
+            # Compute centroid of the group
+            group_arr = np.array(group)
+            
+            # centroid = tuple(np.round(np.mean(group_arr, axis=0)).astype(int))
+            mean = np.mean(group_arr, axis=0)
+            centroid = min(group, key=lambda pt: np.linalg.norm(np.array(pt) - mean))
 
-       # Scale positions to fit the QImage
-        scaled_pos = {node: (x, height - y) for node, (x, y) in pos.items()}  # Flip y-axis for QImage
+            filtered_branch_points.append(centroid)
 
-        # Draw edges
-        for edge in graph.edges():
-            node1, node2 = edge
-            x1, y1 = scaled_pos[node1]
-            x2, y2 = scaled_pos[node2]
-            painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+            for pt in group:
+                pt_mapping[pt] = centroid
 
-        # Draw nodes
-        pen.setColor(Qt.red)  # Red pen for nodes
-        painter.setPen(pen)
-        for node in graph.nodes():
-            x, y = scaled_pos[node]
-            painter.drawEllipse(int(x) - 2, int(y) - 2, 4, 4)  # Draw a small circle for each node
+            taken.update(group_indices)
 
-        # Finish painting
-        painter.end()
+        # Rewire graph  with filtered branch points
+        new_G = nx.Graph()
+        for u, v in G.edges():
+            u_new = pt_mapping.get(u, u)
+            v_new = pt_mapping.get(v, v)
+            if u_new != v_new:
+                new_G.add_edge(u_new, v_new)
 
-        # Save the QImage to a file
-        q_image.save(output_file)
-        print(f"Graph saved to {output_file}")
+        G = new_G
+        branch_points = filtered_branch_points
 
-        return q_image
-        
-        # self.drawBranchPoints(G, pos)
-        
-        # plt.figure(figsize=(8, 8))
-        # nx.draw_networkx_nodes(G, pos, node_size=0.25, node_color="red")
-        # nx.draw_networkx_edges(G, pos, width=2, edge_color="blue")
+        # print(f"length of branch points post1: {len(branch_points)}")
 
+        # Optional: Visualize
+        # plt.imshow(skeleton, cmap='gray')
 
-        # plt.title("Skeleton Graph with Intersections")
-        # plt.savefig("vectorized_skeleton.png", bbox_inches='tight', pad_inches=0)
+        # for x, y in branch_points:
+        #     plt.plot(x, y, 'ro', markersize=3)
+        # plt.title('Branch Points')
+        # plt.savefig("arara1.png", bbox_inches='tight', pad_inches=0)
+        # # plt.show()
         # plt.close()
+
+
+        # plt.imshow(skeleton, cmap='gray')
+
+        # #Plot filtered branch points
+        # for x, y in filtered_branch_points:
+        #     plt.plot(x, y, 'go', markersize=5)
+
+
+        # plt.title('Filtered Branch Points')
+        # plt.savefig("arara2.png", bbox_inches='tight', pad_inches=0)
+        # # plt.show()
+        # plt.close()
+        
+        # # Plot skeleton
+        # plt.figure(figsize=(8, 8))
+        # plt.imshow(skeleton, cmap='gray')
+
+        # # Plot edges (lines between connected nodes)
+        # for (x1, y1), (x2, y2) in G.edges:
+        #     plt.plot([x1, x2], [y1, y2], color='blue', linewidth=0.5)
+
+        # #Plot filtered branch points
+        # for x, y in filtered_branch_points:
+        #     plt.plot(x, y, 'go', markersize=5)
+
+        # # Plot branch points
+        # for x, y in branch_points:
+        #     plt.plot(x, y, 'ro', markersize=3)
+
+        # for i, (x1, y1) in enumerate(branch_points):
+        #     for j in range(i+1, len(branch_points)):
+        #         x2, y2 = branch_points[j]
+        #         plt.plot([x1, x2], [y1, y2], color='green', linestyle='--', linewidth=0.5)
+
+        # plt.title('Skeleton with Edges and Branch Points')
+        # plt.axis('off')
+        # plt.savefig("arara.png", bbox_inches='tight', pad_inches=0)
+        # # plt.show()
+        # plt.close()
+
+        visited_edges = set()
+        segments = []
+
+        for bp in branch_points:
+            for neighbor in G.neighbors(bp):
+                edge = tuple(sorted([bp, neighbor]))
+                if edge in visited_edges:
+                    continue
+
+                path = [bp, neighbor]
+                current = neighbor
+                prev = bp
+
+                while True:
+                    visited_edges.add(tuple(sorted([prev, current])))
+                    neighbors = [n for n in G.neighbors(current) if n != prev]
+
+                    if len(neighbors) != 1 or current in branch_points:
+                        # We hit another branch point or an endpoint
+                        break
+
+                    next_node = neighbors[0]
+                    path.append(next_node)
+                    prev, current = current, next_node
+
+                # Only add if it ends at another branch or endpoint
+                if path[0] in branch_points and current in branch_points:
+                    color = tuple(np.random.randint(0, 256, 3))  # Generate a random RGB color
+                    dx = path[-1][0] - path[0][0]
+                    dy = path[-1][1] - path[0][1]
+                    dist = np.hypot(dx, dy)
+                    angle = np.arctan2(dy, dx)  # Angle in radians
+                    angle_deg = np.degrees(angle)  # Convert to degrees
+                    segments.append((path[0], path[-1], color, angle_deg, dist))
+                    # segments.append((path[0], path[-1]))
+
+        # Rewire graph only with segments which are between branch points
+        G_segments = nx.Graph()
+        for start, end, *_ in segments:
+            G_segments.add_edge(start, end)
+
+        # Recompute branch points: nodes with degree > 2
+        branch_points = [node for node in G_segments.nodes if G_segments.degree(node) > 2]
+        # print(f"length of branch points post2: {len(branch_points)}")
+
+ 
+        # # Plot the skeleton
+        # plt.figure(figsize=(8, 8))
+        # # plt.imshow(skeleton, cmap='gray')
+
+        # # Plot segments between branch points, recreates the skeleton in another way
+        # # for segment in segments:
+        # #     x_vals, y_vals = zip(*segment)
+        # #     color = tuple(np.random.rand(3))  # Generate a random RGB color
+        # #     plt.plot(x_vals, y_vals, color=color, linewidth=2)
+
+        # # Plot polylines between branch points, that is connected nodes
+        # for start, end, color in segments:
+        #     x_vals = [start[0], end[0]]
+        #     y_vals = [start[1], end[1]]
+        #     # color = tuple(np.random.rand(3))  # Generate a random RGB color
+        #     plt.plot(x_vals, y_vals, color=color, linewidth=2)
+
+        # # Plot branch points
+        # for x, y in branch_points:
+        #     plt.plot(x, y, 'ro', markersize=3)
+
+        # plt.title('Directly Connected Branch Points')
+        # plt.axis('off')
+        # # plt.show()
+        # plt.savefig("wawawa.png", bbox_inches='tight', pad_inches=0)
+        # plt.close()
+        
+        # angle = 90
+        # filtered_segments = []
+        # y_threshold = 25  # Adjust this threshold as needed 
+        # # Plot only segments that are nearly horizontal (same Y level)
+        # for start, end in segments:
+        #     y1, y2 = start[1], end[1]  # Remember: start = (x, y)
+
+        #     if abs(y1 - y2) <= y_threshold:
+        #         x_vals = [start[0], end[0]]
+        #         y_vals = [start[1], end[1]]
+                
+        #         dx = end[0] - start[0]
+        #         dy = end[1] - start[1]
+        #         # angle_deg = np.degrees(np.arctan(dy, dx))
+                
+                
+        #         color = tuple(np.random.rand(3))  # Random RGB color
+        #         # filtered_segments.append((start, end))
+        #         plt.plot(x_vals, y_vals, color=color, linewidth=2)
+
+        # # Optionally, still show branch points
+        # for x, y in branch_points:
+        #     plt.plot(x, y, 'ro', markersize=3)
+
+        # plt.title(f'Segments with Δy ≤ {y_threshold}')
+        # plt.axis('off')
+        # plt.savefig("horizontal_segments.png", bbox_inches='tight', pad_inches=0)
+        # plt.close()
+
+        # Convert branch points to (y, x) format
+        branch_points = [(y, x) for x, y in branch_points]
+
+        return branch_points, segments
+        
     
     #####MASK-LINES METHODS#####
     
@@ -839,11 +1264,20 @@ class RowsWidget(QWidget):
         pen = QPen(Qt.red, 5)
 
         # with QPainter(image) as painter:
-        for i, ((x0, y0), (x1, y1), _, color) in enumerate(lines):
+        for i, ((x0, y0), (x1, y1), angle, color) in enumerate(lines):
             # color = colors.pop(0)          
             pen.setColor(QColor(color[0], color[1], color[2]))
             painter.setPen(pen)
             painter.drawLine(x0, y0, x1, y1)
+
+            # Draw angle value at the midpoint of the line
+            mid_x = int((x0 + x1) / 2)
+            mid_y = int((y0 + y1) / 2) - 10  # Slightly above the line
+
+            angle_deg = self.hougAngleToValue(angle)
+            angle_text = f"{angle_deg:.2f}°"
+
+            painter.drawText(mid_x, mid_y, angle_text)
 
         painter.end()
 
@@ -877,18 +1311,18 @@ class RowsWidget(QWidget):
                 cx, cy = blob.centroid
                 # print(f" centroid is {blob.centroid}")
 
-                mapped_centroid = [cx - self.off[0], cy - self.off[1]]
+                mapped_centroid = [cx - self.offset[0], cy - self.offset[1]]
                 # print(f"mapped centroid is {mapped_centroid}")
 
                 # Draw the centroid on the image
-                painter.setBrush(QBrush(QColor(0, 0, 255)))  # Blue color for the centroid
-                painter.drawEllipse(int(mapped_centroid[0]) - 5, int(mapped_centroid[1]) - 5, 10, 10)  # Circle with radius 5
+                # painter.setBrush(QBrush(QColor(0, 0, 255)))  # Blue color for the centroid
+                # painter.drawEllipse(int(mapped_centroid[0]) - 5, int(mapped_centroid[1]) - 5, 10, 10)  # Circle with radius 5
                 
                 painter.setBrush(Qt.NoBrush)  # No fill
                 
                 # x, y, width, height = blob.bbox  # blob boundingbox 
                 # print(f"original is {blob.bbox}")
-                # mapped = [int(x - self.off[1]), int(y - self.off[0])] 
+                # mapped = [int(x - self.offset[1]), int(y - self.offset[0])] 
                 # print(f"mapped is {mapped}")
                 # painter.drawRect(mapped[1], mapped[0], width, height)
 
@@ -897,7 +1331,7 @@ class RowsWidget(QWidget):
                 if contour is not None and len(contour) > 1:
                     # Map the contour points to the viewer's coordinate system
                     mapped_contour = [
-                        QPointF(point[0] - self.off[0], point[1] - self.off[1]) for point in contour
+                        QPointF(point[0] - self.offset[0], point[1] - self.offset[1]) for point in contour
                     ]
 
                     # Create a QPolygonF from the mapped contour
@@ -919,6 +1353,7 @@ class RowsWidget(QWidget):
     def showMaskLinesMenu(self, position):
             menu = QMenu(self)
             menu.addAction(self.actionShowMask)
+            menu.addAction(self.actionShowThickness)
             menu.addAction(self.actionShowBlobs)
             
             # Add a separator line between actions in the context menu
@@ -934,49 +1369,80 @@ class RowsWidget(QWidget):
         if checked:
             self.mask_checked = True
             self.blobs_checked = False
+            self.thickness_checked = False
             self.actionShowBlobs.setChecked(False)
+            self.actionShowThickness.setChecked(False)
         else:
             self.mask_checked = False
         
-        self.toggleMaskLines(self.line_checked, self.mask_checked, self.blobs_checked)
+        self.toggleMaskLines(self.line_checked, self.mask_checked, self.thickness_checked, self.blobs_checked)
 
+    def toggleShowThickness(self, checked):
+        if checked:
+            self.thickness_checked = True
+            self.mask_checked = False
+            self.blobs_checked = False
+            self.actionShowMask.setChecked(False)
+            self.actionShowBlobs.setChecked(False)
+
+            self.updateThicknessTextBox(self.thickness_data, color='white')
+            self.set_thickbox = True
+
+        else:
+            self.thickness_checked = False
+            # self.resetAngleTextBox()
+            self.set_thickbox = False
+        
+        if self.set_thickbox == False and self.set_anglebox == True:
+            self.resetAngleTextBox()
+            self.angleTextBox.setHtml('<div style="color: white;"><b>Slopes:</b></div>')
+            for i, (_, _, angle, color) in enumerate(self.lines):
+                angle_deg = self.hougAngleToValue(angle,4)
+                self.updateAngleTextBox([angle_deg], i, color=f'rgb({color[0]},{color[1]},{color[2]})')
+        elif self.set_anglebox == False and self.set_thickbox == False:
+            self.resetAngleTextBox()
+        self.toggleMaskLines(self.line_checked, self.mask_checked, self.thickness_checked, self.blobs_checked)
+    
     def toggleShowBlobs(self, checked):
         if checked:
             self.blobs_checked = True
             self.mask_checked = False
             self.actionShowMask.setChecked(False)
+            self.actionShowThickness.setChecked(False)
         else:
             self.blobs_checked = False
         
-        self.toggleMaskLines(self.line_checked, self.mask_checked, self.blobs_checked)
+        self.toggleMaskLines(self.line_checked, self.mask_checked, self.thickness_checked, self.blobs_checked)
 
     def toggleShowLines(self, checked):
         if checked:
             self.line_checked = True
 
-            if self.set_textbox == False:
-                for i, (_, _, ang, color) in enumerate(self.lines):
-                # for i, (_, _,ang, color) in enumerate(sorted_lines_with_color):            
-                    if ang < 0:
-                        ang = np.pi/2 + ang  
-                    else:
-                        ang = ang - np.pi/2
-
-                    ang_deg = np.rad2deg(ang)
-                    # ang = round(ang, 4)
-                    ang_deg = round(ang_deg, 4)
-
+            if self.set_anglebox == False:
+                self.angleTextBox.setHtml('<div style="color: white;"><b>Slopes:</b></div>')
+                for i, (_, _, angle, color) in enumerate(self.lines):
+                # for i, (_, _,ang, color) in enumerate(sorted_lines_with_color):
+                    ang_deg = self.hougAngleToValue(angle)
                     self.updateAngleTextBox([ang_deg], i, color=f'rgb({color[0]},{color[1]},{color[2]})')
+                    self.set_anglebox = True
         else:
             self.line_checked = False
-            self.resetAngleTextBox()
-            self.set_textbox = False
-        
-        self.toggleMaskLines(self.line_checked, self.mask_checked, self.blobs_checked)
+            # self.resetAngleTextBox()
+            self.set_anglebox = False
 
-    def toggleMaskLines(self, line_checked, mask_checked, blobs_checked):
+        if self.set_anglebox == False and self.set_thickbox == True:
+            self.resetAngleTextBox()
+            self.updateThicknessTextBox(self.thickness_data, color='white')
+        elif self.set_anglebox == False and self.set_thickbox == False:
+            self.resetAngleTextBox()
+            
+            
+        
+        self.toggleMaskLines(self.line_checked, self.mask_checked, self.thickness_checked, self.blobs_checked)
+
+    def toggleMaskLines(self, line_checked, mask_checked, thickness_checked, blobs_checked):
         if line_checked  == True and mask_checked == True:
-            qmask = genutils.maskToQImage(self.masch)
+            qmask = genutils.maskToQImage(self.work_mask)
             mask_with_lines = self.paintLinesImage(qmask, self.lines)
 
             self.line_viewer.setOpacity(0.7)
@@ -993,7 +1459,14 @@ class RowsWidget(QWidget):
             self.line_viewer.setOpacity(0.9)
             self.line_viewer.setOverlayImage(self.blob_image)
 
-        elif line_checked == True and mask_checked == False and blobs_checked == False:
+        elif line_checked == True and thickness_checked == True:
+            image = self.thickness_image.copy() 
+            image = image.convertToFormat(QImage.Format_ARGB32)
+            image_with_lines = self.paintLinesImage(image, self.lines)
+            self.line_viewer.setOpacity(0.7)
+            self.line_viewer.setOverlayImage(image_with_lines)
+
+        elif line_checked == True and mask_checked == False and thickness_checked == False and blobs_checked == False:
             # image = self.image_cropped.copy()
             image = QImage(self.image_cropped.size(), QImage.Format_ARGB32)
             image.fill(Qt.transparent)
@@ -1003,10 +1476,18 @@ class RowsWidget(QWidget):
             self.line_viewer.setOverlayImage(image_with_lines)
         
         elif line_checked == False and mask_checked == True:
-            qmask = genutils.maskToQImage(self.masch)
+            qmask = genutils.maskToQImage(self.work_mask)
             
             self.line_viewer.setOpacity(0.7)
             self.line_viewer.setOverlayImage(qmask)
+        
+        elif line_checked == False and thickness_checked == True:
+            if self.thickness_image is not None:
+                image = self.thickness_image.copy()
+                self.line_viewer.setOpacity(0.7)
+                self.line_viewer.setOverlayImage(image)
+            else:
+                print("Thickness image is not available.")
 
         elif line_checked == False and blobs_checked == True: 
             # image = self.image_cropped.copy()
@@ -1019,8 +1500,8 @@ class RowsWidget(QWidget):
             self.line_viewer.setOverlayImage(self.blob_image)
         
         else:
-            self.line_viewer.setFixedWidth(IMAGEVIEWER_W)
-            self.line_viewer.setFixedHeight(IMAGEVIEWER_H)
+            self.line_viewer.setFixedWidth(self.IMAGEVIEWER_W)
+            self.line_viewer.setFixedHeight(self.IMAGEVIEWER_H)
             self.line_viewer.setImg(self.image_cropped)
 
             self.blob_image = None
@@ -1031,6 +1512,14 @@ class RowsWidget(QWidget):
             menu = QMenu(self)
             menu.addAction(self.actionShowSkel)
             menu.addAction(self.actionShowEdges)
+            
+            self.actionSeparator = QAction(self)
+            self.actionSeparator.setSeparator(True)
+            menu.addAction(self.actionSeparator)
+
+            menu.addAction(self.actionShowRows)
+            menu.addAction(self.actionShowColumns)
+
 
              # Add a separator line between actions in the context menu
             self.actionSeparator = QAction(self)
@@ -1044,12 +1533,17 @@ class RowsWidget(QWidget):
     def toggleShowSkel(self, checked):
         if checked:
             self.skel_checked = True
+            
             self.edges_checked = False
             self.actionShowEdges.setChecked(False)
+            self.rows_checked = False
+            self.actionShowRows.setChecked(False)
+            self.columns_checked = False
+            self.actionShowColumns.setChecked(False)
         else:
             self.skel_checked = False
         
-        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked)
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
 
     def toggleShowBranch(self, checked):
         if checked:
@@ -1057,252 +1551,337 @@ class RowsWidget(QWidget):
         else:
             self.branch_checked = False
         
-        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked)
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
 
     def toggleShowEdges(self, checked):
         if checked:
             self.edges_checked = True
+
             self.skel_checked = False
             self.actionShowSkel.setChecked(False)
+            self.rows_checked = False
+            self.actionShowRows.setChecked(False)
+            self.columns_checked = False
+            self.actionShowColumns.setChecked(False)
         else:
             self.edges_checked = False
-            self.resetSkelTextBox()
+            # self.resetSkelTextBox()
         
-        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked)
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
 
-    def toggleSkelBranchEdges(self, skel, branch, edges):
-        if skel == True or branch == True or edges == True:
-            branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, branch, skel, edges)
+    def toggleShowRows(self, checked):
+        if checked:
+            self.rows_checked = True
+
+            self.skel_checked = False
+            self.actionShowSkel.setChecked(False)
+            self.edges_checked = False
+            self.actionShowEdges.setChecked(False)
+            # self.columns_checked = False
+            # self.actionShowColumns.setChecked(False)
+        else:
+            self.rows_checked = False
+            # self.resetSkelTextBox()
+        
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+    
+    def toggleShowColumns(self, checked):
+        if checked:
+            self.columns_checked = True
+
+            self.skel_checked = False
+            self.actionShowSkel.setChecked(False)
+            self.edges_checked = False
+            self.actionShowEdges.setChecked(False)
+            # self.rows_checked = False
+            # self.actionShowRows.setChecked(False)
+        else:
+            self.columns_checked = False
+            # self.resetSkelTextBox()
+        
+        self.toggleSkelBranchEdges(self.skel_checked, self.branch_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+
+    def toggleSkelBranchEdges(self, skel, branch, edges, rows, columns):
+        if skel == True or branch == True or edges == True or rows == True or columns == True:
+            branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, branch, skel, edges, rows, columns)
             self.skel_viewer.setOpacity(1.0)
             self.skel_viewer.setOverlayImage(branch_image)
         
         else:
-            self.skel_viewer.setFixedWidth(IMAGEVIEWER_W)
-            self.skel_viewer.setFixedHeight(IMAGEVIEWER_H)
+            self.skel_viewer.setFixedWidth(self.IMAGEVIEWER_W)
+            self.skel_viewer.setFixedHeight(self.IMAGEVIEWER_H)
             self.skel_viewer.setImg(self.image_cropped)
 
-    def drawBranchSkel(self, skeleton, branch_points, connections, branch, skel, conn):
-         # Create a QImage from the skeleton and branch points
+    def updateRowsColumns(self, connections):
+        x_threshold = self.row_dist
+        y_threshold = self.row_dist
+        angle_threshold = self.set_angle
+        self.row_segments = []
+        self.column_segments = []
+
+        for start, end, color, angle, dist in connections:
+            x1, x2 = start[0], end[0]
+            y1, y2 = start[1], end[1]  
+            ang = angle
+            if ang > 90:
+                ang -= 180
+
+            ang = abs(ang)
+
+            if ang < angle_threshold and abs(y1 - y2) <= y_threshold:
+                self.row_segments.append((start, end, color, angle, dist))
+
+            if abs(x1 - x2) <= x_threshold and ang > self.set_angle:
+                self.column_segments.append((start, end, color, angle, dist))
+                    
+    def drawBranchSkel(self, skeleton, branch_points, connections, branch, skel, conn, rows, columns):
+         # Create a transparent QImage from the skeleton and branch points
         branch_image = QImage(skeleton.shape[1], skeleton.shape[0], QImage.Format_ARGB32)
         branch_image.fill(Qt.transparent)
         painter = QPainter(branch_image)
 
         if skel:
-            pen = QPen(Qt.blue, 5)
+            # pen = QPen(Qt.blue, 2)
+            pen = QPen(self.skeleton_color, 3)  # Custom skeleton color
             painter.setPen(pen)
 
-            # Draw skeleton
-            for (y, x) in zip(*np.where(skeleton)):
-                painter.drawPoint(x, y)
-        
+            h, w = skeleton.shape
+            neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1),
+                                ( 0, -1),          ( 0, 1),
+                                ( 1, -1), ( 1, 0), ( 1, 1)]
+            yx = np.column_stack(np.where(skeleton))
+            skeleton_set = set((y, x) for y, x in yx)
+            for y, x in yx:
+                for dy, dx in neighbor_offsets:
+                    ny, nx_ = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx_ < w and (ny, nx_) in skeleton_set:
+                        # To avoid duplicate lines, only draw if neighbor is "after" current
+                        if (ny > y) or (ny == y and nx_ > x):
+                            painter.drawLine(x, y, nx_, ny)
+
+            # # to draw the skeleton by points in yellow
+            # pen = QPen(Qt.yellow, 2)
+            # painter.setPen(pen)
+
+            # for (y, x) in zip(*np.where(skeleton)):
+            #     painter.drawPoint(x, y)
+
         if conn: 
-            pen = QPen(Qt.green, 3)
-            for i, (point1, point2, color, ang) in enumerate(connections):
-                pen.setColor(QColor(color[0], color[1], color[2]))
-                painter.setPen(pen)
-
-                painter.drawLine(point1[1], point1[0], point2[1], point2[0])
-                self.updateSkelTextBox([ang], i, color=f'rgb({color[0]},{color[1]},{color[2]})')
-
-        if branch:                
-            pen = QPen(Qt.red, 7)
+            # pen = QPen(Qt.green, 3)
+            pen = QPen(self.edge_color, 3)  # Custom edge color
             painter.setPen(pen)
-            painter.setBrush(QBrush(Qt.red))
+    
+            for i, (start, end, color, angle, dist) in enumerate(connections):                    
+                # pen.setColor(QColor(color[0], color[1], color[2]))
+                # painter.setPen(pen)
+                if dist > 2:
+                    painter.drawLine(start[0], start[1], end[0], end[1])
+
+                    # self.updateSkelTextBox([angle], i, color=f'rgb({color[0]},{color[1]},{color[2]})')
+
+                    # #Draw the angle value above each line
+                    # angle_text = f"{angle:.2f}°"
+                    # text_x = (start[0] + end[0]) // 2 - 20
+                    # text_y = (start[1] + end[1]) // 2 - 10  # Slightly above the line
+                    # painter.drawText(text_x, text_y, angle_text)
+
+        if rows:
+            # pen = QPen(QColor(255, 140, 0), 3)  # Orange
+            pen = QPen(self.row_color, 3)  # Custom row color
+            painter.setPen(pen)
+
+            # Draw rows segments
+            self.updateRowsColumns(connections)
+                    
+            for i, (start, end, color, angle, dist) in enumerate(self.row_segments):                    
+                # pen.setColor(QColor(color[0], color[1], color[2]))
+                # painter.setPen(pen)
+                # print(f"angle of {i} is {angle}")
+                if dist > 2:
+                    painter.drawLine(start[0], start[1], end[0], end[1])   
+
+        if columns:
+            # pen = QPen(QColor(102, 0, 153), 3)  # Deep purple
+            pen = QPen(self.column_color, 3)  # Custom column color
+            painter.setPen(pen)
+
+            # Draw column segments
+            self.updateRowsColumns(connections)
+
+            for i, (start, end, color, angle, dist) in enumerate(self.column_segments):                    
+                # pen.setColor(QColor(color[0], color[1], color[2]))
+                # painter.setPen(pen)
+                # print(f"angle of {i} is {angle}")
+                if dist > 2:
+                    painter.drawLine(start[0], start[1], end[0], end[1])   
+        
+        if branch:                
+            # pen = QPen(QColor(255, 0, 0, 100), )
+            # painter.setPen(pen)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 0, 0))
             for point in branch_points:
-                painter.drawEllipse(point[1], point[0], 7, 7)
+                painter.drawEllipse(point[1] - 2, point[0] - 2, 4, 4)
         
         painter.end()
 
         return branch_image
-    
-    def connectBranchPoints(self, branch_points, brick_width, brick_dist):  
-        
-        # Connect branch points that are adjacent on the same row (within ±15 pixels vertically).
-        if not branch_points:
-            print("No branch points to connect.")
-            return
-
-        # Sort branch points by their y-coordinate (row)
-        branch_points.sort(key=lambda point: point[0])
-
-        # Define the vertical tolerance for a row
-        print(f"Row distance: {brick_dist}")
-        row_tolerance = brick_dist
-
-        # Group branch points by rows
-        rows = []
-        current_row = [branch_points[0]]
-
-        for i in range(1, len(branch_points)):
-            if abs(self.branch_points[i][0] - current_row[-1][0]) <= row_tolerance:
-                current_row.append(branch_points[i])
-            else:
-                rows.append(current_row)
-                current_row = [branch_points[i]]
-
-        # Add the last row
-        if current_row:
-            rows.append(current_row)
-
-        # Connect points within each row
-        connections = []
-        for row in rows:
-            row.sort(key=lambda point: point[1])  # Sort by x-coordinate
-            # for i in range(len(row) - 1):
-            #     color = tuple(np.random.randint(0, 256, 3))  # RGB color
-                
-            #     # Calculate the angle of the connection (in degrees)
-            #     point1, point2 = row[i], row[i + 1]
-            #     dy = point2[0] - point1[0]
-            #     dx = point2[1] - point1[1]
-            #     angle = np.degrees(np.arctan2(dy, dx))  # Angle in degrees
-                
-            #     connections.append((row[i], row[i + 1], color, angle))
-
-            # print(brick_width)
-            for i in range(len(row) - 1):
-                point1, point2 = row[i], row[i + 1]
-                dx = abs(point2[1] - point1[1])  # Horizontal distance
-                if dx <= brick_width:  # Only connect if within column_tolerance
-                    color = tuple(np.random.randint(0, 256, 3))  # RGB color
-                    
-                    # Calculate the angle of the connection (in degrees)
-                    dy = point2[0] - point1[0]
-                    angle = np.degrees(np.arctan2(dy, dx))  # Angle in degrees
-                    
-                    connections.append((point1, point2, color, angle))
-
-        self.edges = connections
 
     #####EXPORT METHODS#####
 
-    def exportLineViewerData(self):
-            options = self.getLineExportOptions()
-            if not options:
-                return  # User canceled the dialog or provided invalid input
+    def addMaskToProject(self):
+        if self.parent_viewer:
+            self.parent_viewer.addMaskAsBlob(self.work_mask, offset=self.offset, class_name="Empty")
+        return
 
-            file_path = options["path"]
-            export_angles = options["export_angles"]
-            export_mask = options["export_mask"]
-            export_blobs = options["export_blobs"]
+    # Unified export function for both line and skeleton data.
+    def exportData(self):
+        dialog = ExportDialog(self)
+        # Show all checkboxes and options
+        dialog.angle_checkbox.show()
+        dialog.mask_checkbox.show()
+        dialog.line_checkbox.show()
+        dialog.blob_checkbox.show()
+        dialog.skeleton_checkbox.show()
+        dialog.branch_points_checkbox.show()
+        dialog.edges_checkbox.show()
+        dialog.rows_checkbox.show()
+        dialog.columns_checkbox.show()
+        dialog.format_label.show()
+        dialog.format_combo.show()
 
-            export_success = False
+        # Set current state as default
+        dialog.angle_checkbox.setChecked(self.line_checked)
+        dialog.mask_checkbox.setChecked(self.mask_checked)
+        dialog.line_checkbox.setChecked(self.line_checked)
+        dialog.blob_checkbox.setChecked(self.blobs_checked)
+        dialog.skeleton_checkbox.setChecked(self.skel_checked)
+        dialog.branch_points_checkbox.setChecked(self.branch_checked)
+        dialog.edges_checkbox.setChecked(self.edges_checked)
+        dialog.rows_checkbox.setChecked(self.rows_checked)
+        dialog.columns_checkbox.setChecked(self.columns_checked)
+
+        # Connect format change to onExportFormatChanged method
+        # dialog.format_combo.currentTextChanged.connect(
+        #     lambda _: self.onExportFormatChanged(dialog)
+        # )
+        # # Set initial state
+        # self.onExportFormatChanged(dialog)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        options = dialog.getExportOptions()
+        file_path = options["path"]
+        export_angles = options.get("export_angles", False)
+        export_thickness = options.get("export_thickness", False)
+        export_mask = options.get("export_mask", False)
+        export_lines = options.get("export_lines", False)
+        export_blobs = options.get("export_blobs", False)
+        export_skeleton = options.get("export_skeleton", False)
+        export_branch_points = options.get("export_branch_points", False)
+        export_edges = options.get("export_edges", False)
+        export_rows = options.get("export_rows", False)
+        export_columns = options.get("export_columns", False)
+        export_format = options.get("format", "")
+        export_success = False
+
+        
+        if export_angles and hasattr(self, "lines"):
+            angles_filename = f"{file_path}_angles.csv"
+            with open(angles_filename, "w") as angle_file:
+                angle_file.write("Line Index,Angle (degrees)\n")
+                for i, (_, _, angle, _) in enumerate(self.lines):
+                    angle_deg = self.hougAngleToValue(angle)
+                    angle_file.write(f"{i + 1},{angle_deg:.2f}\n")
+            export_success = True
+
+        if export_thickness and hasattr(self, "thickness_image"):
+            thick_filename = f"{file_path}_thickness.csv"
+            with open(thick_filename, "w") as thick_file:
+                # writer = csv.writer(csvfile)
+                # writer.writerow(["Mean", "Max", "Min"])
+                # writer.writerow([f"{self.thickness_data[0]:.2f}", f"{self.thickness_data[1]:.2f}", f"{self.thickness_data[2]:.2f}"])
+                thick_file.write("Mean,Max,Min\n")
+                thick_file.write(f"{self.thickness_data[0]:.2f},{self.thickness_data[1]:.2f},{self.thickness_data[2]:.2f}\n")
+            export_success = True
+        
+        # DXF export (if selected)
+        if export_format == ".dxf":
+            if not file_path.lower().endswith(".dxf"):
+                file_path += ".dxf"
+            dialog.mask = self.work_mask if export_mask else None
+            dialog.lines = self.lines if export_lines else []
+            dialog.skeleton = self.skeleton if export_skeleton else None
+            dialog.branch_points = self.branch_points if export_branch_points else []
+            dialog.edges = self.edges if export_edges else []
+            dialog.rows = self.row_segments if export_rows else []
+            dialog.columns = self.column_segments if export_columns else []
+            dialog.blobs = self.blob_list if export_blobs else []
+
+            georef_filename = None
+            if hasattr(self.parent_viewer.image, 'georef_filename') and self.parent_viewer.image.georef_filename:
+                georef_filename = self.parent_viewer.image.georef_filename
+
+            dialog.DXFExport(
+                file_path, export_skeleton, export_branch_points, export_edges, export_rows, export_columns, export_blobs, export_mask, export_lines,
+                georef=georef_filename, offset=self.offset,
+                img_size=(self.parent_viewer.image.width, self.parent_viewer.image.height),
+                skeleton_color=self.skeleton_color, edge_color=self.edge_color,
+                row_color=self.row_color, column_color=self.column_color
+            )
+            export_success = True
+
+        # PNG/CSV export for each selected option
+        else:
             if export_mask:
                 mask_filename = f"{file_path}_mask.png"
-                if self.line_checked:
-                    qmask = genutils.maskToQImage(self.masch)
+                if self.line_checked and hasattr(self, "lines"):
+                    qmask = genutils.maskToQImage(self.work_mask)
                     mask_with_lines = self.paintLinesImage(qmask, self.lines)
+                    # self.blob_image = mask_with_lines
+                    self.blob_image = self.paintLinesImage(self.image_cropped,self.lines)
                     mask_with_lines.save(mask_filename)
                 else:
-                    mask_image = genutils.maskToQImage(self.masch)
+                    mask_image = genutils.maskToQImage(self.work_mask)
                     mask_image.save(mask_filename)
-                print(f"Mask exported to {mask_filename}")
+                export_success = True
 
             if export_blobs:
                 blobs_filename = f"{file_path}_blobs.png"
                 blob_image = self.drawBlobs(self.blob_image, self.blob_list)
                 blob_image.save(blobs_filename)
-                print(f"Blobs exported to {blobs_filename}")
-            
-            if export_angles:
-                angles_filename = f"{file_path}_angles.csv"
-                with open(angles_filename, "w") as file:
-                    file.write("Line Index,Angle (degrees)\n")
-                    for i, (_, _, angle, _) in enumerate(self.lines):
-                        if angle < 0:
-                            angle = np.pi/2 + angle  
-                        else:
-                            angle = angle - np.pi/2
-                        
-                        angle_deg = np.rad2deg(angle)
-                        file.write(f"{i + 1},{angle_deg:.2f}\n")
-                print(f"Angles exported to {angles_filename}")
-                
-            export_success = True
+                export_success = True
 
-            if export_success:
-                QMessageBox.information(self, "Export Successful", "Data exported successfully.")
-            else:
-                QMessageBox.warning(self, "Export Failed", "No data to export.")
-
-    def getLineExportOptions(self):
-        # Displays the export dialog for line viewer data and returns the selected options."""
-        dialog = ExportDialog(self)
-        dialog.angle_checkbox.setChecked(self.line_checked)  # Default options
-        dialog.angle_checkbox.setEnabled(False)  
-
-        dialog.mask_checkbox.setChecked(self.mask_checked)
-        dialog.mask_checkbox.setEnabled(False)  
-
-        dialog.blob_checkbox.setChecked(self.blobs_checked)
-        dialog.blob_checkbox.setEnabled(False)  
-
-        dialog.skeleton_checkbox.hide()  # Hide irrelevant options
-        dialog.branch_points_checkbox.hide()
-        dialog.edges_checkbox.hide()
-
-        if dialog.exec_() == QDialog.Accepted:
-            return dialog.getExportOptions()
-        return None
-    
-    def exportSkelViewerData(self):
-            options = self.getSkelExportOptions()
-            if not options:
-                return  # User canceled the dialog or provided invalid input
-
-            file_path = options["path"]
-            export_skeleton = options["export_skeleton"]
-            export_branch_points = options["export_branch_points"]
-            export_edges = options["export_edges"]
-            export_success = False
             if export_skeleton and self.skeleton is not None:
                 skeleton_filename = f"{file_path}_skeleton.png"
                 branch_image = self.drawBranchSkel(
-                    self.skeleton, self.branch_points, self.edges, export_branch_points, export_skeleton, export_edges
+                    self.skeleton, self.branch_points, self.edges,
+                    export_branch_points, export_skeleton, export_edges
                 )
                 branch_image.save(skeleton_filename)
-                print(f"Skeleton exported to {skeleton_filename}")
                 export_success = True
 
             if export_edges and self.edges:
                 edges_filename = f"{file_path}_edges.png"
                 edge_image = self.drawBranchSkel(
-                    self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked
+                    self.skeleton, self.branch_points, self.edges,
+                    self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked
                 )
                 edge_image.save(edges_filename)
-                print(f"Edges with branch_points exported to {edges_filename}")
-                
                 angles_filename = f"{file_path}_edges_angles.csv"
                 with open(angles_filename, "w") as file:
                     file.write("Connection Index,Angle (degrees)\n")
-                    for i, (_, _, _, angle) in enumerate(self.edges):
+                    for i, (_, _, _, angle, _) in enumerate(self.edges):
                         file.write(f"{i + 1},{angle:.2f}\n")
-                print(f"Angles exported to {angles_filename}")
                 export_success = True
 
-            if export_success:
-                QMessageBox.information(self, "Export Successful", "Data exported successfully.")
-            else:
-                QMessageBox.warning(self, "Export Failed", "No data to export.")
+        if export_success:
+            QMessageBox.information(self, "Export Successful", "Data exported successfully.")
+        else:
+            QMessageBox.warning(self, "Export Failed", "No data to export.")
 
-    def getSkelExportOptions(self):
-        # Displays the export dialog for skeleton viewer data and returns the selected options.
-        dialog = ExportDialog(self)
-        dialog.skeleton_checkbox.setChecked(self.skel_checked)
-        dialog.skeleton_checkbox.setEnabled(False)
-
-        dialog.branch_points_checkbox.setChecked(self.branch_checked)
-        dialog.branch_points_checkbox.setEnabled(False)  
-
-        dialog.edges_checkbox.setChecked(self.edges_checked)
-        dialog.edges_checkbox.setEnabled(False)  
-
-        dialog.angle_checkbox.hide()  # Hide irrelevant options
-        dialog.mask_checkbox.hide()
-        dialog.blob_checkbox.hide()
+    
 
 
-        if dialog.exec_() == QDialog.Accepted:
-            return dialog.getExportOptions()
-        return None
   

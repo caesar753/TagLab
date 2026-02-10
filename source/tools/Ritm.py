@@ -49,6 +49,12 @@ class Ritm(Tool):
 
         self.tool_message = f'<div style="text-align: left;">{message}</div>'
 
+    def activate(self):
+        self.viewerplus.showMessage(self.tool_message)
+
+    def deactivate(self):
+        self.viewerplus.clearMessage()
+
     def checkPointPosition(self, x, y):
 
         if self.work_area_bbox[2]==0 and self.work_area_bbox[3]==0:
@@ -264,7 +270,7 @@ class Ritm(Tool):
                 utils.undrawAllBlobs(self.current_blobs, self.viewerplus.scene)
                 self.current_blobs = []
 
-                blobs = self.viewerplus.annotations.blobsFromMask(segm_mask, offsetx, offsety, 1000)
+                blobs = self.viewerplus.annotations.blobsFromMask(segm_mask, offsetx, offsety, 10)
 
                 for blob in blobs:
                     if self.intersectionWithExistingBlobs(blob) < 90.0:
@@ -286,11 +292,12 @@ class Ritm(Tool):
                         if intersecting_pixels > biggest_intersection:
                            biggest_intersection = intersecting_pixels
                            biggest_blob = blob
-
-                    self.current_blobs = [biggest_blob]
+                    if biggest_blob is not None:
+                        self.current_blobs = [biggest_blob]
 
                 for blob in self.current_blobs:
-                    self.drawBlob(blob)
+                    if blob is not None:
+                      self.drawBlob(blob)
 
                 self.infoMessage.emit("Segmentation done.")
 
@@ -349,25 +356,26 @@ class Ritm(Tool):
 
         # WARNING!! In the editing mode only the biggest blob is considered (e.g. it is not possible to subdivide
         # an existing blob in two blobs)
-        if self.blob_to_correct is not None:
-            new_blob = self.current_blobs[0]
-            new_blob.class_name = self.blob_to_correct.class_name
-            utils.undrawBlob(new_blob, self.viewerplus.scene, redraw=False)
-            self.viewerplus.updateBlob(self.blob_to_correct, new_blob, selected=True)
-            message = "[TOOL][RITM][BLOB-EDITED]"
-            self.blobInfo.emit(new_blob, message)
-        else:
-            for blob in self.current_blobs:
+        if len(self.current_blobs)>0:
+            if self.blob_to_correct is not None:
+                new_blob = self.current_blobs[0]
+                new_blob.class_name = self.blob_to_correct.class_name
+                utils.undrawBlob(new_blob, self.viewerplus.scene, redraw=False)
+                self.viewerplus.updateBlob(self.blob_to_correct, new_blob, selected=True)
+                message = "[TOOL][RITM][BLOB-EDITED]"
+                self.blobInfo.emit(new_blob, message)
+            else:
+                for blob in self.current_blobs:
 
-                # undraw preview
-                utils.undrawBlob(blob, self.viewerplus.scene, redraw=False)
+                    # undraw preview
+                    utils.undrawBlob(blob, self.viewerplus.scene, redraw=False)
 
-                # add blob
-                self.viewerplus.addBlob(blob, selected=True)
+                    # add blob
+                    self.viewerplus.addBlob(blob, selected=True)
 
-                self.blobInfo.emit(blob, message)
+                    self.blobInfo.emit(blob, message)
 
-            self.viewerplus.project.updateCorrespondences("ADD", self.viewerplus.image, self.current_blobs, None, "")
+                self.viewerplus.project.updateCorrespondences("ADD", self.viewerplus.image, self.current_blobs, None, "")
 
         self.viewerplus.saveUndo()
         self.viewerplus.resetSelection()

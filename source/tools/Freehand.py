@@ -10,10 +10,15 @@ class Freehand(Tool):
         self.edit_points = edit_points
 
         message = "<p><i>Segment by drawing a CLOSED curve on the map</i></p>"
-        message += "<p>- LMB + drag to draw<br/>\
-                    - CTRL + LMB + drag to pan view</p>"
+        message += "<p>- SHIFT + LMB to draw</p>"
         message += "<p>SPACEBAR to apply segmentation</p>"
         self.tool_message = f'<div style="text-align: left;">{message}</div>'
+
+    def activate(self):
+        self.viewerplus.showMessage(self.tool_message)
+
+    def deactivate(self):
+        self.viewerplus.clearMessage()
 
     def leftPressed(self, x, y, mods):
         if mods == Qt.ShiftModifier:
@@ -50,7 +55,6 @@ class Freehand(Tool):
 
         else:
             self.log.emit("[TOOL][FREEHAND] Operation ends (INVALID SNAP!).")
-            return
 
-
+        self.viewerplus.resetSelection()
         self.viewerplus.resetTools()

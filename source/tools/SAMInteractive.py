@@ -89,6 +89,11 @@ class SAMInteractive(Tool):
 
         self.tool_message = f'<div style="text-align: left;">{message}</div>'
 
+    def activate(self):
+        self.viewerplus.showMessage(self.tool_message)
+
+    def deactivate(self):
+        self.viewerplus.clearMessage()
 
     def setSize(self, delta):
         #increase value got from delta angle of mouse wheel
@@ -225,7 +230,8 @@ class SAMInteractive(Tool):
         
         if mods == Qt.ShiftModifier:        
             
-            self.loadNetwork()
+            if not self.loadNetwork():
+                return
             
             if not self.work_area_set:
                 self.setWorkArea()
@@ -415,6 +421,21 @@ class SAMInteractive(Tool):
             mask_resized = mask.squeeze()
             # Fill in while still small
             mask_resized = ndi.binary_fill_holes(mask_resized).astype(float)
+
+            # Find all connected components in the mask
+            labeled_mask, num_features = ndi.label(mask_resized)
+            if num_features > 1:
+                # Find the largest connected component
+                sizes = ndi.sum(mask_resized, labeled_mask, range(1, num_features + 1))
+                largest_label = np.argmax(sizes) + 1
+                # Keep only the largest component
+                mask_resized = (labeled_mask == largest_label).astype(float)
+
+            
+            # #Save the mask as an image
+            # os.makedirs("masks", exist_ok=True)
+            # mask_filename = os.path.join("masks", "mask_{:06d}.png".format(len(os.listdir("masks"))))
+            # cv2.imwrite(mask_filename, (mask_resized * 255).astype(np.uint8))
 
             # Region contain masked object
             indices = np.argwhere(mask_resized)
@@ -634,7 +655,9 @@ class SAMInteractive(Tool):
                 box.setText(f"Model weights {self.sam_model_type} cannot be found in models folder.\n"
                             f"If they have not been downloaded, re-run the install script.")
                 box.exec()
-            # Go back to GUI without closing program
+
+                self.viewerplus.resetTools()
+                return False
 
             else:
                 # Set the device; users should be using a CUDA GPU, otherwise tool is slow
@@ -645,6 +668,9 @@ class SAMInteractive(Tool):
                 sam_model.to(device=device)
                 self.sampredictor_net = SamPredictor(sam_model)
                 self.device = device
+                return True
+
+        return True
 
     def resetNetwork(self):
         """
@@ -680,7 +706,8 @@ class SAMInteractive(Tool):
         self.pick_points.reset()
         self.labels = []
         self.resetWorkArea()
-        self.viewerplus.scene.addItem(self.rect_item)
+        if self.rect_item is not None:
+            self.viewerplus.scene.addItem(self.rect_item)
 
 
  #method to display the rectangle on the map

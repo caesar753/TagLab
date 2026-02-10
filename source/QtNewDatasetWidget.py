@@ -32,7 +32,7 @@ class QtNewDatasetWidget(QWidget):
         super(QtNewDatasetWidget, self).__init__(parent)
 
         self.setStyleSheet("background-color: rgb(40,40,40); color: white")
-        TEXT_SPACE = 150
+        TEXT_SPACE = 180
         LINEWIDTH = 300
 
         ###########################################################
@@ -43,6 +43,9 @@ class QtNewDatasetWidget(QWidget):
         self.lblExportArea = QLabel("Area to export: ")
         self.lblExportArea.setFixedWidth(TEXT_SPACE)
         self.lblExportArea.setAlignment(Qt.AlignRight)
+        self.lblTilePrefix = QLabel("Tile name prefix: ")
+        self.lblTilePrefix.setFixedWidth(TEXT_SPACE)
+        self.lblTilePrefix.setAlignment(Qt.AlignRight)
 
         self.lblSplitMode = QLabel("Dataset split:")
         self.lblSplitMode.setFixedWidth(TEXT_SPACE)
@@ -50,14 +53,19 @@ class QtNewDatasetWidget(QWidget):
         self.lblTargetScale = QLabel("Target pixel size:")
         self.lblTargetScale.setFixedWidth(TEXT_SPACE)
         self.lblTargetScale.setAlignment(Qt.AlignRight)
+        self.lblDataFormat = QLabel("Data format:")
+        self.lblDataFormat.setFixedWidth(TEXT_SPACE)
+        self.lblDataFormat.setAlignment(Qt.AlignRight)
 
 
         layoutH0a = QVBoxLayout()
         layoutH0a.setAlignment(Qt.AlignRight)
         layoutH0a.addWidget(self.lblDatasetFolder)
         layoutH0a.addWidget(self.lblExportArea)
+        layoutH0a.addWidget(self.lblTilePrefix)
         layoutH0a.addWidget(self.lblSplitMode)
         layoutH0a.addWidget(self.lblTargetScale)
+        layoutH0a.addWidget(self.lblDataFormat)
 
         ###########################################################
 
@@ -67,9 +75,12 @@ class QtNewDatasetWidget(QWidget):
         self.editExportArea = QLineEdit("")
         self.editExportArea.setStyleSheet("background-color: rgb(55,55,55); border: 1px solid rgb(90,90,90)")
         self.editExportArea.setMinimumWidth(LINEWIDTH)
+        self.editTilePrefix = QLineEdit("")
+        self.editTilePrefix.setStyleSheet("background-color: rgb(55,55,55); border: 1px solid rgb(90,90,90)")
+        self.editTilePrefix.setMinimumWidth(LINEWIDTH)
         self.comboSplitMode = QComboBox()
         self.comboSplitMode.setStyleSheet("background-color: rgb(55,55,55); border: 1px solid rgb(90,90,90)")
-        self.comboSplitMode.setFixedWidth(LINEWIDTH)
+        self.comboSplitMode.setMinimumWidth(LINEWIDTH)
         self.comboSplitMode.addItem("Uniform (vertical)")
         self.comboSplitMode.addItem("Uniform (horizontal)")
         # self.comboSplitMode.addItem("Random")
@@ -81,12 +92,21 @@ class QtNewDatasetWidget(QWidget):
         self.area_to_export = [0, 0, 0, 0]
         self.setAreaToExport(export_area[0], export_area[1], export_area[2], export_area[3])
 
+        # self.checkOversampling = QCheckBox("Oversampling")
+        self.comboDataFormat = QComboBox()
+        self.comboDataFormat.setStyleSheet("background-color: rgb(55,55,55); border: 1px solid rgb(90,90,90)")
+        self.comboDataFormat.addItem("Tiles")
+        self.comboDataFormat.addItem("COCO")
+        self.comboDataFormat.addItem("YOLO-v5")
+
         layoutH0b = QVBoxLayout()
         layoutH0b.setAlignment(Qt.AlignLeft)
         layoutH0b.addWidget(self.editDatasetFolder)
         layoutH0b.addWidget(self.editExportArea)
+        layoutH0b.addWidget(self.editTilePrefix)
         layoutH0b.addWidget(self.comboSplitMode)
         layoutH0b.addWidget(self.editTargetScale)
+        layoutH0b.addWidget(self.comboDataFormat)
 
         ###############################################################
 
@@ -100,6 +120,7 @@ class QtNewDatasetWidget(QWidget):
         layoutH0c = QVBoxLayout()
         layoutH0c.addWidget(self.btnChooseDatasetFolder)
         layoutH0c.addWidget(self.btnChooseExportArea)
+        layoutH0c.addSpacing(self.editTilePrefix.sizeHint().height())
         layoutH0c.addStretch()
 
         layoutH1 = QHBoxLayout()
@@ -109,23 +130,18 @@ class QtNewDatasetWidget(QWidget):
 
         ###########################################################
 
-        # self.checkOversampling = QCheckBox("Oversampling")
-        self.checkTiles = QCheckBox("Show Exported Tiles")
-        self.checkCoco = QCheckBox("Export In Coco Panoptic Format")
-
         layoutH2 = QHBoxLayout()
-        layoutH2.addWidget(self.checkTiles)
-        layoutH2.addWidget(self.checkCoco)
+        self.checkShowTiles = QCheckBox("Show exported tiles")
+        layoutH2.addStretch()
+        layoutH2.addWidget(self.checkShowTiles)
         layoutH2.addStretch()
 
         ###########################################################
 
         layoutH3 = QHBoxLayout()
-
         self.btnCancel = QPushButton("Cancel")
         self.btnCancel.clicked.connect(self.close)
         self.btnExport = QPushButton("Export")
-
         layoutH3.setAlignment(Qt.AlignRight)
         layoutH3.addStretch()
         layoutH3.addWidget(self.btnCancel)
@@ -141,6 +157,9 @@ class QtNewDatasetWidget(QWidget):
 
         self.setWindowTitle("Export New Training Dataset - Settings")
         self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowCloseButtonHint | Qt.WindowTitleHint)
+
+        # default widget size is not so accurate in this case..
+        self.update()
 
     @pyqtSlot()
     def chooseDatasetFolder(self):
@@ -174,5 +193,13 @@ class QtNewDatasetWidget(QWidget):
     def getTargetScale(self):
 
         return float(self.editTargetScale.text())
+
+    def getTilePrefix(self):
+
+        return self.editTilePrefix.text()
+
+    def setTilePrefix(self, prefix):
+
+        self.editTilePrefix.setText(prefix)
 
 
