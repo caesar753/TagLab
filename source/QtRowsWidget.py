@@ -413,6 +413,15 @@ class RowsWidget(QWidget):
         
         self.btnThickness = QPushButton("Compute Thickness Map")
         self.btnThickness.clicked.connect(lambda: self.thicknessMap(self.work_mask))
+
+
+         # New: compute shortest path top->bottom along skeleton
+        self.btnTopBottom = QPushButton("Top-Bottom Path")
+        self.btnTopBottom.setToolTip("Compute shortest path from top branch points to bottom along the skeleton")
+        self.btnTopBottom.clicked.connect(self.computeTopBottomPath)
+        self.btnTopBottom.setEnabled(False)
+        data_button_layout.addWidget(self.btnTopBottom)
+
         
         data_button_layout.setAlignment(Qt.AlignLeft)
         data_button_layout.addWidget(self.btnCompute)
@@ -542,6 +551,9 @@ class RowsWidget(QWidget):
 
         self.btnThickness.setEnabled(True)
         
+        #NEW
+        self.btnTopBottom.setEnabled(True)
+        
         # Get row_distance from  BrickDistBox
         # try:
         #     self.row_dist = int(self.BrickDistBox.text())
@@ -582,6 +594,8 @@ class RowsWidget(QWidget):
         branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
         self.skel_viewer.setOpacity(1.0)
         self.skel_viewer.setOverlayImage(branch_image)
+        #NEW
+        self.top_bottom_path = None
 
     
     def closeWidget(self):
@@ -642,6 +656,8 @@ class RowsWidget(QWidget):
         self.angleTextBox.clear()
         self.set_anglebox = False
         self.set_thickbox = False
+        #NEW
+        self.top_bottom_path = None
 
     # def updateSkelTextBox(self, angles, index, color='red'):
     #     current_text = self.skelTextBox.toHtml()
@@ -1048,6 +1064,9 @@ class RowsWidget(QWidget):
                 if neighbor in skeleton_set:
                     G.add_edge((x0, y0), (neighbor[1], neighbor[0]))  # note: (x, y) order
 
+        #NEW
+        self.skel_graph = G.copy()  # Keep a copy of the original graph for reference
+        
         # Branch points: nodes with degree > 2
         branch_points = [node for node in G.nodes if G.degree(node) > 2]
         # print(f"length of branch points pre: {len(branch_points)}")
@@ -1190,6 +1209,9 @@ class RowsWidget(QWidget):
         for start, end, *_ in segments:
             G_segments.add_edge(start, end)
 
+        #NEW
+        self.skel_graph_segments = G_segments  # Keep a copy nx.of the segments graph for reference
+
         # Recompute branch points: nodes with degree > 2
         branch_points = [node for node in G_segments.nodes if G_segments.degree(node) > 2]
         # print(f"length of branch points post2: {len(branch_points)}")
@@ -1255,6 +1277,70 @@ class RowsWidget(QWidget):
         branch_points = [(y, x) for x, y in branch_points]
 
         return branch_points, segments
+    
+    ###########COMPUTE TOP-BOTTOM PATH###########
+    def computeTopBottomPath(self):
+        # require skeleton/branch points and stored pixel graph
+        if getattr(self, "skel_graph", None) is None or not self.branch_points:
+            QMessageBox.warning(self, "Missing data", "Compute skeleton/branch points first.")
+            return
+
+        h, w = self.skeleton.shape
+        # branch_points are (y,x) -> convert to (x,y) to match graph nodes
+        pts_xy = [(pt[1], pt[0]) for pt in self.branch_points]
+        ys = [y for x, y in pts_xy]
+        if not ys:
+            QMessageBox.warning(self, "No branch points", "No branch points available.")
+            return
+
+        tol = max(5, int(0.05 * h))
+        min_y = min(ys)
+        max_y = max(ys)
+        top_candidates = [p for p in pts_xy if p[1] <= min_y + tol]
+        bottom_candidates = [p for p in pts_xy if p[1] >= max_y - tol]
+        if not top_candidates or not bottom_candidates:
+            QMessageBox.warning(self, "Top/Bottom not found", "Could not identify top or bottom branch points.")
+            return
+
+        best_path = None
+        best_len = None
+        G = self.skel_graph
+        for top in top_candidates:
+            if top not in G: 
+                continue
+            for bot in bottom_candidates:
+                if bot not in G:
+                    continue
+                try:
+                    path = nx.shortest_path(G, source=top, target=bot)
+                    L = len(path)
+                    if best_path is None or L < best_len:
+                        best_path = path
+                        best_len = L
+                except nx.NetworkXNoPath:
+                    continue
+
+        if best_path is None:
+            QMessageBox.warning(self, "No path", "No path found between top and bottom branch points.")
+            return
+
+        # save as (y,x) for later use
+        self.top_bottom_path = [(y, x) for x, y in best_path]
+
+        # draw path over existing branch image
+        branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+        painter = QPainter(branch_image)
+        pen = QPen(QColor(255, 0, 0), 4)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        for i in range(len(best_path) - 1):
+            x0, y0 = best_path[i]
+            x1, y1 = best_path[i + 1]
+            painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+        painter.end()
+        self.skel_viewer.setOverlayImage(branch_image)
+        QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {best_len}")
         
     
     #####MASK-LINES METHODS#####
