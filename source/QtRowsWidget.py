@@ -8,6 +8,11 @@ import matplotlib.cm as cm
 from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QSizePolicy, QTextEdit, QLineEdit, QSlider, QMenu, QCheckBox, QMenuBar, QAction, QDialog
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush, QPolygonF
 from PyQt5.QtCore import pyqtSignal, Qt, QBuffer, QPointF
+from PyQt5.QtWidgets import QFileDialog
+
+import csv
+import os
+from datetime import datetime
 
 from source.QtImageViewer import QtImageViewer
 from source.QtExportRows import ExportDialog
@@ -1918,6 +1923,7 @@ class RowsWidget(QWidget):
         dialog.edges_checkbox.show()
         dialog.rows_checkbox.show()
         dialog.columns_checkbox.show()
+        dialog.topbottom_checkbox.show()
         dialog.format_label.show()
         dialog.format_combo.show()
 
@@ -1931,6 +1937,11 @@ class RowsWidget(QWidget):
         dialog.edges_checkbox.setChecked(self.edges_checked)
         dialog.rows_checkbox.setChecked(self.rows_checked)
         dialog.columns_checkbox.setChecked(self.columns_checked)
+        # default for top-bottom path export
+        try:
+            dialog.topbottom_checkbox.setChecked(getattr(self, 'top_bottom_path', None) is not None)
+        except Exception:
+            pass
 
         # Connect format change to onExportFormatChanged method
         # dialog.format_combo.currentTextChanged.connect(
@@ -1954,6 +1965,7 @@ class RowsWidget(QWidget):
         export_edges = options.get("export_edges", False)
         export_rows = options.get("export_rows", False)
         export_columns = options.get("export_columns", False)
+        export_topbottom = options.get("export_topbottom", False)
         export_format = options.get("format", "")
         export_success = False
 
@@ -1999,7 +2011,8 @@ class RowsWidget(QWidget):
                 georef=georef_filename, offset=self.offset,
                 img_size=(self.parent_viewer.image.width, self.parent_viewer.image.height),
                 skeleton_color=self.skeleton_color, edge_color=self.edge_color,
-                row_color=self.row_color, column_color=self.column_color
+                row_color=self.row_color, column_color=self.column_color,
+                topbottom=export_topbottom, topbottom_path=(self.top_bottom_path if export_topbottom and hasattr(self, 'top_bottom_path') else None), topbottom_color=QColor(255,0,0)
             )
             export_success = True
 
@@ -2030,6 +2043,20 @@ class RowsWidget(QWidget):
                     self.skeleton, self.branch_points, self.edges,
                     export_branch_points, export_skeleton, export_edges
                 )
+                # if exporting top-bottom path as PNG, paint it on the branch image
+                if export_topbottom and hasattr(self, 'top_bottom_path') and self.top_bottom_path is not None:
+                    painter = QPainter(branch_image)
+                    pen = QPen(QColor(255,0,0), 4)
+                    pen.setCapStyle(Qt.RoundCap)
+                    pen.setJoinStyle(Qt.RoundJoin)
+                    painter.setPen(pen)
+                    # top_bottom_path stored as list of (y,x)
+                    path_nodes = [(x, y) for (y, x) in self.top_bottom_path]
+                    for i in range(len(path_nodes) - 1):
+                        x0, y0 = path_nodes[i]
+                        x1, y1 = path_nodes[i + 1]
+                        painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+                    painter.end()
                 branch_image.save(skeleton_filename)
                 export_success = True
 
