@@ -64,6 +64,8 @@ class ExportDialog(QDialog):
         
         # New: export top-bottom shortest path
         self.topbottom_checkbox = QCheckBox("Export Top-Bottom Shortest Path")
+        # New: export top-bottom stats (CSV)
+        self.topbottom_stats_checkbox = QCheckBox("Export Top-Bottom Path Stats (CSV)")
 
         
         layout.addWidget(self.mask_checkbox)
@@ -76,7 +78,7 @@ class ExportDialog(QDialog):
         layout.addWidget(self.rows_checkbox)
         layout.addWidget(self.columns_checkbox)
         layout.addWidget(self.topbottom_checkbox)
-
+       
         # Separator
         line1 = QFrame()
         line1.setFrameShape(QFrame.HLine)
@@ -85,6 +87,8 @@ class ExportDialog(QDialog):
 
         layout.addWidget(self.angle_checkbox)
         layout.addWidget(self.thick_checkbox)
+        layout.addWidget(self.topbottom_stats_checkbox)
+
 
         # Separator
         line2 = QFrame()
@@ -405,4 +409,5 @@ class ExportDialog(QDialog):
             "export_rows": self.rows_checkbox.isChecked(),
             "export_columns": self.columns_checkbox.isChecked(),
             "export_topbottom": self.topbottom_checkbox.isChecked(),
+            "export_topbottom_stats": self.topbottom_stats_checkbox.isChecked(),
         }

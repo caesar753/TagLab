@@ -1312,18 +1312,16 @@ class RowsWidget(QWidget):
                     QMessageBox.warning(self, "No path", "Top-Bottom path not available. Compute rows first.")
                     self.actionComputeTopBottom.setChecked(False)
                     return
+                else:
+                    # computed successfully; draw path (CSV export controlled via Export dialog)
+                    self.drawTopBottomPath()
             else:
                 # path already computed: draw and show info dialog with stored length
                 self.drawTopBottomPath()
                 if getattr(self, "top_bottom_length", None) is not None:
-                    # QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {self.top_bottom_length}")
-                    if self.scale:
-                        print("self.scale is set")
-                        scaled_len = self.top_bottom_length * float(self.scale)
-                        QMessageBox.information(self, "Path found", f"Top-Bottom path length: {scaled_len} mm ({self.top_bottom_length} pixels)")
-                    else:
-                        print("self.scale is not set")
-                        QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {self.top_bottom_length}")
+                    # show stored length with unit
+                    unit = getattr(self, 'top_bottom_length_unit', 'px')
+                    QMessageBox.information(self, "Path found", f"Top-Bottom path length: {self.top_bottom_length:.2f} {unit}")
         else:
             # hide path by redrawing base branch image
             if getattr(self, "skeleton", None) is not None:
@@ -1379,9 +1377,62 @@ class RowsWidget(QWidget):
             QMessageBox.warning(self, "No path", "No path found between top and bottom branch points.")
             return False
 
-        # save as (y,x) for later use and store length
+        # best_path is a pixel-level path as list of (x,y)
+        # store legacy (y,x) path for drawing and keep length computed along skeleton
         self.top_bottom_path = [(y, x) for x, y in best_path]
-        self.top_bottom_length = best_len
+
+        # total length along skeleton (sum of euclidean distances between consecutive pixels)
+        total_len_px = 0.0
+        for i in range(len(best_path) - 1):
+            x0, y0 = best_path[i]
+            x1, y1 = best_path[i + 1]
+            total_len_px += float(np.hypot(x1 - x0, y1 - y0))
+        # store pixel length and a unit-aware length (mm if scale set, else px)
+        self.top_bottom_length_px = total_len_px
+        if getattr(self, 'scale', None):
+            try:
+                scale_f = float(self.scale)
+            except Exception:
+                scale_f = 1.0
+            self.top_bottom_length = total_len_px * scale_f
+            self.top_bottom_length_unit = 'mm'
+        else:
+            self.top_bottom_length = total_len_px
+            self.top_bottom_length_unit = 'px'
+
+        # compute distances along skeleton between successive branch points
+        # pts_xy is branch points in (x,y) format defined earlier
+        branch_set = set(pts_xy)
+        branch_indices = [i for i, node in enumerate(best_path) if node in branch_set]
+        segment_lengths = []
+        if len(branch_indices) >= 2:
+            for a, b in zip(branch_indices, branch_indices[1:]):
+                seg_len = 0.0
+                for j in range(a, b):
+                    x0, y0 = best_path[j]
+                    x1, y1 = best_path[j + 1]
+                    seg_len += float(np.hypot(x1 - x0, y1 - y0))
+                segment_lengths.append(seg_len)
+
+        if segment_lengths:
+            min_seg_px = float(min(segment_lengths))
+            max_seg_px = float(max(segment_lengths))
+        else:
+            min_seg_px = 0.0
+            max_seg_px = 0.0
+        # store both px and unit-aware values
+        self.top_bottom_min_seg_px = min_seg_px
+        self.top_bottom_max_seg_px = max_seg_px
+        if getattr(self, 'scale', None):
+            try:
+                scale_f = float(self.scale)
+            except Exception:
+                scale_f = 1.0
+            self.top_bottom_min_seg = min_seg_px * scale_f
+            self.top_bottom_max_seg = max_seg_px * scale_f
+        else:
+            self.top_bottom_min_seg = min_seg_px
+            self.top_bottom_max_seg = max_seg_px
 
         # draw path over existing branch image only when requested (i.e. from toggle)
         if show_msg:
@@ -1397,7 +1448,9 @@ class RowsWidget(QWidget):
                 painter.drawLine(int(x0), int(y0), int(x1), int(y1))
             painter.end()
             self.skel_viewer.setOverlayImage(branch_image)
-            QMessageBox.information(self, "Path found", f"Top-Bottom path length (pixels): {best_len}")
+            # show total length along skeleton with unit
+            unit = getattr(self, 'top_bottom_length_unit', 'px')
+            QMessageBox.information(self, "Path found", f"Top-Bottom path length: {self.top_bottom_length:.2f} {unit}")
         return True
 
     def drawTopBottomPath(self):
@@ -1965,6 +2018,7 @@ class RowsWidget(QWidget):
         export_edges = options.get("export_edges", False)
         export_rows = options.get("export_rows", False)
         export_columns = options.get("export_columns", False)
+        export_topbottom_stats = options.get("export_topbottom_stats", False)
         export_topbottom = options.get("export_topbottom", False)
         export_format = options.get("format", "")
         export_success = False
@@ -2041,7 +2095,7 @@ class RowsWidget(QWidget):
                 skeleton_filename = f"{file_path}_skeleton.png"
                 branch_image = self.drawBranchSkel(
                     self.skeleton, self.branch_points, self.edges,
-                    export_branch_points, export_skeleton, export_edges
+                    export_branch_points, export_skeleton, export_edges, export_rows, export_columns
                 )
                 # if exporting top-bottom path as PNG, paint it on the branch image
                 if export_topbottom and hasattr(self, 'top_bottom_path') and self.top_bottom_path is not None:
@@ -2059,6 +2113,24 @@ class RowsWidget(QWidget):
                     painter.end()
                 branch_image.save(skeleton_filename)
                 export_success = True
+                # Export top-bottom stats CSV if requested
+                if export_topbottom_stats:
+                    try:
+                        if not hasattr(self, 'top_bottom_length_px'):
+                            raise AttributeError('Top-Bottom stats not available')
+                        unit = getattr(self, 'top_bottom_length_unit', 'px')
+                        stats_filename = f"{file_path}_path_stats.csv"
+                        with open(stats_filename, 'w', newline='') as csvfile:
+                            writer = csv.writer(csvfile)
+                            if unit == 'mm':
+                                writer.writerow(["path_length_along_skel_mm", "min_segment_len_mm", "max_segment_len_mm"])
+                                writer.writerow([f"{self.top_bottom_length:.2f}", f"{self.top_bottom_min_seg:.2f}", f"{self.top_bottom_max_seg:.2f}"])
+                            else:
+                                writer.writerow(["path_length_along_skel_px", "min_segment_len_px", "max_segment_len_px"])
+                                writer.writerow([f"{self.top_bottom_length_px:.2f}", f"{self.top_bottom_min_seg_px:.2f}", f"{self.top_bottom_max_seg_px:.2f}"])
+                        export_success = True
+                    except Exception as e:
+                        QMessageBox.warning(self, "Export skipped", f"Could not write top-bottom stats CSV: {e}")
 
             if export_edges and self.edges:
                 edges_filename = f"{file_path}_edges.png"
