@@ -1434,23 +1434,62 @@ class RowsWidget(QWidget):
             self.top_bottom_min_seg = min_seg_px
             self.top_bottom_max_seg = max_seg_px
 
+        # Minimum vertical and horizontal displacements between branch points along the path, as a measure of how "straight" the path is
+        min_vert_px = None
+        min_horiz_px = None
+        vert_list = []
+        horiz_list = []
+        if len(branch_indices) >= 2:
+            for a, b in zip(branch_indices, branch_indices[1:]):
+                x_a, y_a = best_path[a]
+                x_b, y_b = best_path[b]
+                vert = abs(y_b - y_a)
+                horiz = abs(x_b - x_a)
+                vert_list.append(float(vert))
+                horiz_list.append(float(horiz))
+            if vert_list:
+                min_vert_px = float(min(vert_list))
+            else:
+                min_vert_px = 0.0
+            if horiz_list:
+                min_horiz_px = float(min(horiz_list))
+            else:
+                min_horiz_px = 0.0
+        else:
+            min_vert_px = 0.0
+            min_horiz_px = 0.0
+
+        self.top_bottom_min_vertical_px = min_vert_px
+        self.top_bottom_min_horizontal_px = min_horiz_px
+        if getattr(self, 'scale', None):
+            try:
+                scale_f = float(self.scale)
+            except Exception:
+                scale_f = 1.0
+            self.top_bottom_min_vertical = min_vert_px * scale_f
+            self.top_bottom_min_horizontal = min_horiz_px * scale_f
+        else:
+            self.top_bottom_min_vertical = min_vert_px
+            self.top_bottom_min_horizontal = min_horiz_px
+
         # draw path over existing branch image only when requested (i.e. from toggle)
-        if show_msg:
-            branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
-            painter = QPainter(branch_image)
-            pen = QPen(QColor(255, 0, 0), 4)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen)
-            for i in range(len(best_path) - 1):
-                x0, y0 = best_path[i]
-                x1, y1 = best_path[i + 1]
-                painter.drawLine(int(x0), int(y0), int(x1), int(y1))
-            painter.end()
-            self.skel_viewer.setOverlayImage(branch_image)
-            # show total length along skeleton with unit
-            unit = getattr(self, 'top_bottom_length_unit', 'px')
-            QMessageBox.information(self, "Path found", f"Top-Bottom path length: {self.top_bottom_length:.2f} {unit}")
+        # if show_msg:
+        #     branch_image = self.drawBranchSkel(self.skeleton, self.branch_points, self.edges, self.branch_checked, self.skel_checked, self.edges_checked, self.rows_checked, self.columns_checked)
+        #     painter = QPainter(branch_image)
+        #     pen = QPen(QColor(255, 0, 0), 4)
+        #     pen.setCapStyle(Qt.RoundCap)
+        #     pen.setJoinStyle(Qt.RoundJoin)
+        #     painter.setPen(pen)
+        #     for i in range(len(best_path) - 1):
+        #         x0, y0 = best_path[i]
+        #         x1, y1 = best_path[i + 1]
+        #         painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+        #     painter.end()
+        #     self.skel_viewer.setOverlayImage(branch_image)
+        #     # show total length along skeleton with unit
+        #     unit = getattr(self, 'top_bottom_length_unit', 'px')
+        #     QMessageBox.information(self, "Path found", f"Top-Bottom path length: {self.top_bottom_length:.2f} {unit}")
+        
         return True
 
     def drawTopBottomPath(self):
@@ -2114,6 +2153,23 @@ class RowsWidget(QWidget):
                 branch_image.save(skeleton_filename)
                 export_success = True
                 # Export top-bottom stats CSV if requested
+                # if export_topbottom_stats:
+                #     try:
+                #         if not hasattr(self, 'top_bottom_length_px'):
+                #             raise AttributeError('Top-Bottom stats not available')
+                #         unit = getattr(self, 'top_bottom_length_unit', 'px')
+                #         stats_filename = f"{file_path}_path_stats.csv"
+                #         with open(stats_filename, 'w', newline='') as csvfile:
+                #             writer = csv.writer(csvfile)
+                #             if unit == 'mm':
+                #                 writer.writerow(["path_length_along_skel_mm", "min_segment_len_mm", "max_segment_len_mm"])
+                #                 writer.writerow([f"{self.top_bottom_length:.2f}", f"{self.top_bottom_min_seg:.2f}", f"{self.top_bottom_max_seg:.2f}"])
+                #             else:
+                #                 writer.writerow(["path_length_along_skel_px", "min_segment_len_px", "max_segment_len_px"])
+                #                 writer.writerow([f"{self.top_bottom_length_px:.2f}", f"{self.top_bottom_min_seg_px:.2f}", f"{self.top_bottom_max_seg_px:.2f}"])
+                #         export_success = True
+                #     except Exception as e:
+                #         QMessageBox.warning(self, "Export skipped", f"Could not write top-bottom stats CSV: {e}")
                 if export_topbottom_stats:
                     try:
                         if not hasattr(self, 'top_bottom_length_px'):
@@ -2123,11 +2179,35 @@ class RowsWidget(QWidget):
                         with open(stats_filename, 'w', newline='') as csvfile:
                             writer = csv.writer(csvfile)
                             if unit == 'mm':
-                                writer.writerow(["path_length_along_skel_mm", "min_segment_len_mm", "max_segment_len_mm"])
-                                writer.writerow([f"{self.top_bottom_length:.2f}", f"{self.top_bottom_min_seg:.2f}", f"{self.top_bottom_max_seg:.2f}"])
+                                writer.writerow([
+                                    "path_length_along_skel_mm",
+                                    "min_segment_len_mm",
+                                    "max_segment_len_mm",
+                                    "min_branch_vertical_mm",
+                                    "min_branch_horizontal_mm"
+                                ])
+                                writer.writerow([
+                                    f"{self.top_bottom_length:.2f}",
+                                    f"{self.top_bottom_min_seg:.2f}",
+                                    f"{self.top_bottom_max_seg:.2f}",
+                                    f"{self.top_bottom_min_vertical:.2f}",
+                                    f"{self.top_bottom_min_horizontal:.2f}"
+                                ])
                             else:
-                                writer.writerow(["path_length_along_skel_px", "min_segment_len_px", "max_segment_len_px"])
-                                writer.writerow([f"{self.top_bottom_length_px:.2f}", f"{self.top_bottom_min_seg_px:.2f}", f"{self.top_bottom_max_seg_px:.2f}"])
+                                writer.writerow([
+                                    "path_length_along_skel_px",
+                                    "min_segment_len_px",
+                                    "max_segment_len_px",
+                                    "min_branch_vertical_px",
+                                    "min_branch_horizontal_px"
+                                ])
+                                writer.writerow([
+                                    f"{self.top_bottom_length_px:.2f}",
+                                    f"{self.top_bottom_min_seg_px:.2f}",
+                                    f"{self.top_bottom_max_seg_px:.2f}",
+                                    f"{self.top_bottom_min_vertical_px:.2f}",
+                                    f"{self.top_bottom_min_horizontal_px:.2f}"
+                                ])
                         export_success = True
                     except Exception as e:
                         QMessageBox.warning(self, "Export skipped", f"Could not write top-bottom stats CSV: {e}")

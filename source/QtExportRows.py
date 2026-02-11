@@ -65,7 +65,7 @@ class ExportDialog(QDialog):
         # New: export top-bottom shortest path
         self.topbottom_checkbox = QCheckBox("Export Top-Bottom Shortest Path")
         # New: export top-bottom stats (CSV)
-        self.topbottom_stats_checkbox = QCheckBox("Export Top-Bottom Path Stats (CSV)")
+        self.topbottom_stats_checkbox = QCheckBox("Export Top-Bottom Path Stats (in .csv format)")
 
         
         layout.addWidget(self.mask_checkbox)
