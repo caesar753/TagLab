@@ -1319,9 +1319,40 @@ class RowsWidget(QWidget):
                 # path already computed: draw and show info dialog with stored length
                 self.drawTopBottomPath()
                 if getattr(self, "top_bottom_length", None) is not None:
-                    # show stored length with unit
-                    unit = getattr(self, 'top_bottom_length_unit', 'px')
-                    QMessageBox.information(self, "Path found", f"Top-Bottom path length: {self.top_bottom_length:.2f} {unit}")
+                    # show stored length with unit and distances to fitted bottom line
+                    length_unit = getattr(self, 'top_bottom_length_unit', 'px')
+                    length_text = f"{self.top_bottom_length:.2f} {length_unit}" if getattr(self, 'top_bottom_length', None) is not None else "N/A"
+
+                    # perp_val = getattr(self, 'top_bottom_perp_dist', None)
+                    # perp_unit = getattr(self, 'top_bottom_perp_dist_unit', 'px')
+                    # perp_text = f"{perp_val:.2f} {perp_unit}" if perp_val is not None else "N/A"
+
+                    vert_val = getattr(self, 'top_bottom_vertical', None)
+                    vert_unit = getattr(self, 'top_bottom_vertical_unit', 'px')
+                    vert_text = f"{vert_val:.2f} {vert_unit}" if vert_val is not None else "N/A"
+
+                    # compute ratio between path length and vertical distance (unit-aware)
+                    length_val = getattr(self, 'top_bottom_length', None)
+                    vert_val_unit = getattr(self, 'top_bottom_vertical', None)
+                    ratio_text = "N/A"
+                    if length_val is not None and vert_val_unit is not None:
+                        try:
+                            if float(vert_val_unit) != 0:
+                                ratio = float(length_val) / float(vert_val_unit)
+                                ratio_text = f"{ratio:.2f}"
+                            else:
+                                ratio_text = "inf"
+                        except Exception:
+                            ratio_text = "N/A"
+
+                    msg = (
+                        f"Top-Bottom shortes path length: {length_text}\n"
+                        # f"Perpendicular distance to fitted bottom line: {perp_text}\n"
+                        # f"Vertical (y) difference to projection: {vert_text}\n"
+                        f"Top-bottom vertical distance: {vert_text}\n"
+                        f"Path / Distance ratio: {ratio_text}"
+                    )
+                    QMessageBox.information(self, "Path found", msg)
         else:
             # hide path by redrawing base branch image
             if getattr(self, "skeleton", None) is not None:
@@ -1357,6 +1388,8 @@ class RowsWidget(QWidget):
 
         best_path = None
         best_len = None
+        chosen_top = None
+        chosen_bot = None
         G = self.skel_graph
         for top in top_candidates:
             if top not in G: 
@@ -1370,6 +1403,8 @@ class RowsWidget(QWidget):
                     if best_path is None or L < best_len:
                         best_path = path
                         best_len = L
+                        chosen_top = top
+                        chosen_bot = bot
                 except nx.NetworkXNoPath:
                     continue
 
@@ -1399,6 +1434,61 @@ class RowsWidget(QWidget):
         else:
             self.top_bottom_length = total_len_px
             self.top_bottom_length_unit = 'px'
+
+        # --- NEW: compute orthogonal projection of chosen top onto bottom line and distances ---
+        try:
+            # chosen_top is (x,y)
+            top_pt = np.array(chosen_top, dtype=float)
+
+            # bottom line: use PCA (best-fit line) on bottom_candidates (array of (x,y))
+            bottom_pts = np.asarray(bottom_candidates, dtype=float)
+            if bottom_pts.shape[0] >= 2:
+                centroid = bottom_pts.mean(axis=0)
+                # principal direction via SVD
+                U, S, Vt = np.linalg.svd(bottom_pts - centroid)
+                direction = Vt[0]  # unit direction vector along fitted bottom line
+
+                # orthogonal projection of top onto bottom line
+                proj = centroid + np.dot(top_pt - centroid, direction) * direction
+            else:
+                # if only one bottom point, projection is that point
+                proj = bottom_pts[0].astype(float)
+
+            # perpendicular (shortest) distance in pixels
+            perp_dist_px = float(np.linalg.norm(top_pt - proj))
+            # vertical (y) difference in pixels between top and projection
+            vertical_px = float(abs(top_pt[1] - proj[1]))
+
+            # store projection (as legacy (y,x) to match other stored coords)
+            self.top_bottom_projection_px = (float(proj[1]), float(proj[0]))
+            self.top_bottom_perp_dist_px = perp_dist_px
+            self.top_bottom_vertical_px = vertical_px
+
+            # unit-aware copies if scale present
+            if getattr(self, 'scale', None):
+                try:
+                    scale_f = float(self.scale)
+                except Exception:
+                    scale_f = 1.0
+                self.top_bottom_perp_dist = perp_dist_px * scale_f
+                self.top_bottom_vertical = vertical_px * scale_f
+                self.top_bottom_perp_dist_unit = 'mm'
+                self.top_bottom_vertical_unit = 'mm'
+            else:
+                self.top_bottom_perp_dist = perp_dist_px
+                self.top_bottom_vertical = vertical_px
+                self.top_bottom_perp_dist_unit = 'px'
+                self.top_bottom_vertical_unit = 'px'
+        except Exception:
+            # don't break main computation if projection fails
+            self.top_bottom_projection_px = None
+            self.top_bottom_perp_dist_px = None
+            self.top_bottom_vertical_px = None
+            self.top_bottom_perp_dist = None
+            self.top_bottom_vertical = None
+            self.top_bottom_perp_dist_unit = None
+            self.top_bottom_vertical_unit = None
+        # --- end new block ---
 
         # compute distances along skeleton between successive branch points
         # pts_xy is branch points in (x,y) format defined earlier
