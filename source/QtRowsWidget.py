@@ -2269,31 +2269,54 @@ class RowsWidget(QWidget):
                         with open(stats_filename, 'w', newline='') as csvfile:
                             writer = csv.writer(csvfile)
                             if unit == 'mm':
+                                # single header row including vertical and ratio
                                 writer.writerow([
                                     "path_length_along_skel_mm",
+                                    "vertical_length_mm",
+                                    "path_to_vertical_ratio",
                                     "min_segment_len_mm",
                                     "max_segment_len_mm",
                                     "min_branch_vertical_mm",
                                     "min_branch_horizontal_mm"
                                 ])
+                                try:
+                                    vert_val = float(getattr(self, 'top_bottom_vertical', float('nan')))
+                                    ratio_val = float(getattr(self, 'top_bottom_length', float('nan'))) / vert_val if vert_val != 0 else float('inf')
+                                except Exception:
+                                    vert_val = float('nan')
+                                    ratio_val = float('nan')
                                 writer.writerow([
                                     f"{self.top_bottom_length:.2f}",
+                                    f"{vert_val:.2f}",
+                                    (f"{ratio_val:.2f}" if not np.isinf(ratio_val) else 'inf'),
                                     f"{self.top_bottom_min_seg:.2f}",
                                     f"{self.top_bottom_max_seg:.2f}",
                                     f"{self.top_bottom_min_vertical:.2f}",
                                     f"{self.top_bottom_min_horizontal:.2f}"
                                 ])
                             else:
+                                # single header row including vertical and ratio (px)
                                 writer.writerow([
                                     "path_length_along_skel_px",
+                                    "vertical_to_projection_px",
+                                    "path_to_vertical_ratio",
                                     "min_segment_len_px",
                                     "max_segment_len_px",
                                     "min_branch_vertical_px",
-                                    "min_branch_horizontal_px"
+                                    "min_branch_horizontal_px",
+
                                 ])
+                                try:
+                                    vert_val_px = float(getattr(self, 'top_bottom_vertical_px', float('nan')))
+                                    ratio_val_px = float(getattr(self, 'top_bottom_length_px', float('nan'))) / vert_val_px if vert_val_px != 0 else float('inf')
+                                except Exception:
+                                    vert_val_px = float('nan')
+                                    ratio_val_px = float('nan')
                                 writer.writerow([
                                     f"{self.top_bottom_length_px:.2f}",
                                     f"{self.top_bottom_min_seg_px:.2f}",
+                                    f"{vert_val_px:.2f}",
+                                    (f"{ratio_val_px:.2f}" if not np.isinf(ratio_val_px) else 'inf'),
                                     f"{self.top_bottom_max_seg_px:.2f}",
                                     f"{self.top_bottom_min_vertical_px:.2f}",
                                     f"{self.top_bottom_min_horizontal_px:.2f}"
